@@ -13,7 +13,7 @@
     RimeApi_stdbool *api = rime_get_api_stdbool();
     dispatch_once(&once, ^{
         NSFileManager *fm = NSFileManager.defaultManager;
-        NSURL *directory = [[fm URLsForDirectory:NSApplicationSupportDirectory inDomains:NSUserDomainMask].firstObject URLByAppendingPathComponent:@"Yah/Rime"];
+        NSURL *directory = [[fm URLsForDirectory:NSApplicationSupportDirectory inDomains:NSUserDomainMask].firstObject URLByAppendingPathComponent:@"Yah/RimeIce"];
         NSURL *data = [bundle URLForResource:@"RimeData" withExtension:nil];
         if (!data || ![fm createDirectoryAtURL:directory withIntermediateDirectories:YES attributes:nil error:nil]) return;
         RIME_STRUCT(RimeTraits, traits);
@@ -22,12 +22,11 @@
         traits.app_name = "rime.yah";
         api->setup(&traits);
         api->initialize(&traits);
-        if (api->start_maintenance(False)) api->join_maintenance_thread();
         ready = YES;
     });
     if (!ready) return nil;
     _session = api->create_session();
-    if (!_session || !api->select_schema(_session, "yah")) return nil;
+    if (!_session || !api->select_schema(_session, "rime_ice")) return nil;
     return self;
 }
 
