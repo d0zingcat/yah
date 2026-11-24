@@ -9,7 +9,7 @@ final class YahRimeSession {
         let fm = FileManager.default
         guard let data = Bundle.main.url(forResource: "RimeData", withExtension: nil),
               let support = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else { return false }
-        let user = support.appendingPathComponent("Yah/RimeIce")
+        let user = support.appendingPathComponent("Yah/Rime")
         do { try fm.createDirectory(at: user, withIntermediateDirectories: true) }
         catch { return false }
         data.path.withCString { sharedPath in
@@ -25,8 +25,9 @@ final class YahRimeSession {
                 }
             }
         }
-        // Rime reads the deployed schema and dictionaries from RimeData/build.
-        // Compiling them in the keyboard extension would delay startup.
+        // Packaged YAML timestamps can be older than the existing deployment.
+        // Check the workspace so librime can rebuild changed dictionaries.
+        if api.start_maintenance(true) { api.join_maintenance_thread() }
         return true
     }()
 
@@ -34,7 +35,7 @@ final class YahRimeSession {
         guard Self.ready else { return nil }
         let session = Self.api.create_session()
         guard session != 0 else { return nil }
-        guard Self.api.select_schema(session, "rime_ice") else {
+        guard Self.api.select_schema(session, "yah") else {
             _ = Self.api.destroy_session(session)
             return nil
         }
