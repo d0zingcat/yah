@@ -20,6 +20,8 @@ final class Composition {
 
     var spelling: String { session?.input ?? literal }
     var displaySpelling: String { session?.selectedPreedit ?? spelling }
+    var hasSelectedSegment: Bool { session?.selectedPreedit != nil }
+    var hasNativeCandidates: Bool { session?.choices.isEmpty == false }
     private var doublePinyin: Bool { schema == "yah_xiaohe" || schema == "yah_ziranma" }
 
     var candidates: [String] {
