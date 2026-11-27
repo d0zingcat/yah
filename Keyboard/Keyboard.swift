@@ -320,7 +320,7 @@ final class KeyboardController: UIInputViewController {
         typingHeader = header
         header.axis = .vertical
         header.isLayoutMarginsRelativeArrangement = true
-        header.layoutMargins = UIEdgeInsets(top: 1, left: 8, bottom: 1, right: 8)
+        header.layoutMargins = UIEdgeInsets(top: 0, left: 3, bottom: 0, right: 3)
         let scroll = UIScrollView()
         // The toolbar is a single opaque keyboard row. System scroll-edge glass can obscure
         // the candidate glyphs on iOS 26 even when the content fits on one line.
@@ -343,8 +343,7 @@ final class KeyboardController: UIInputViewController {
             suggestions.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor),
             suggestions.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor),
             suggestions.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor),
-            suggestions.heightAnchor.constraint(equalTo: scroll.frameLayoutGuide.heightAnchor),
-            header.heightAnchor.constraint(equalToConstant: 52)])
+            suggestions.heightAnchor.constraint(equalTo: scroll.frameLayoutGuide.heightAnchor)])
         addChild(voiceLink)
         voiceLink.view.backgroundColor = .clear
         voiceLink.view.widthAnchor.constraint(equalToConstant: 48).isActive = true
@@ -450,7 +449,7 @@ final class KeyboardController: UIInputViewController {
         let previewWidth = recordingPreview.widthAnchor.constraint(equalTo: toolbar.widthAnchor, multiplier: 0.40)
         previewWidth.priority = .defaultHigh
         previewWidth.isActive = true
-        toolbar.heightAnchor.constraint(equalToConstant: 52).isActive = true
+        toolbar.heightAnchor.constraint(equalToConstant: 46).isActive = true
         stack.addArrangedSubview(toolbar)
         voiceStatus.font = .preferredFont(forTextStyle: .caption1)
         voiceStatus.textAlignment = .center
@@ -1314,7 +1313,8 @@ final class KeyboardController: UIInputViewController {
         case .accent: color = Self.accentKey
         case .candidate:
             color = .clear
-            config.contentInsets = NSDirectionalEdgeInsets(top: 0, leading: 9, bottom: 0, trailing: 9)
+            config.contentInsets = NSDirectionalEdgeInsets(top: 0, leading: 5, bottom: 0, trailing: 5)
+            config.background.backgroundInsets = .zero
         }
         config.background.backgroundColor = color
         key.configuration = config
@@ -1477,9 +1477,7 @@ final class KeyboardController: UIInputViewController {
         }.joined() : displayed
         spelling.isHidden = spelling.text?.isEmpty != false
         suggestions.arrangedSubviews.forEach { $0.removeFromSuperview() }
-        if !composition.spelling.isEmpty {
-            suggestions.addArrangedSubview(button("分词") { $0.composition.append("'") })
-        } else {
+        if composition.spelling.isEmpty {
             let mode = styledButton(schemeTitle + effectiveOutputForm.suffix, style: .candidate)
             let schemes = Scheme.allCases.map { choice in
                 UIAction(title: choice.title, state: communityID == nil && choice == scheme ? .on : .off) { [weak self] _ in

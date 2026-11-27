@@ -38,6 +38,26 @@ final class Typing: KeyboardUITest {
         let start = key.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.75))
         start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(dx: 0, dy: -55)), withVelocity: .fast, thenHoldForDuration: 0)
         XCTAssertEqual(field.value as? String, "3")
+        XCTAssertFalse(host.buttons["展开候选"].exists)
+    }
+
+    func testCompactCandidatesAndNineKeySeparator() {
+        type("ni")
+        let candidate = host.buttons["你"].firstMatch
+        XCTAssertTrue(candidate.waitForExistence(timeout: 3), host.debugDescription)
         XCTAssertFalse(host.buttons["分词"].exists)
+        XCTAssertLessThanOrEqual(candidate.frame.minX, host.buttons["q"].frame.minX + 6)
+        XCTAssertGreaterThanOrEqual(candidate.frame.height, 28)
+        XCTAssertLessThanOrEqual(candidate.frame.height, 36)
+        candidate.tap()
+
+        tap("全拼")
+        tap("九宫格")
+        let separator = host.buttons.matching(identifier: "分词")
+        XCTAssertTrue(separator.firstMatch.waitForExistence(timeout: 3))
+        tap("ABC")
+        XCTAssertEqual(separator.count, 1)
+        XCTAssertTrue(separator.firstMatch.isHittable)
+        XCTAssertTrue(host.buttons["展开候选"].exists)
     }
 }
