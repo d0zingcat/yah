@@ -1186,14 +1186,16 @@ final class KeyboardController: UIInputViewController {
         refresh()
     }
 
-    private func finishComposition() {
+    private func finishComposition(allowRawFallback: Bool = true) {
         while !composition.spelling.isEmpty {
             let pending = composition.spelling
             let preview = composition.displaySpelling
+            if !allowRawFallback && !composition.hasNativeCandidates { return }
             if let selected = composition.select(0) {
                 textDocumentProxy.insertText(selected)
             }
             if composition.spelling == pending && composition.displaySpelling == preview {
+                if !allowRawFallback { return }
                 textDocumentProxy.insertText(preview)
                 composition.clear()
             }
@@ -1333,13 +1335,18 @@ final class KeyboardController: UIInputViewController {
     }
 
     private func commitReturn() {
-        if composition.spelling.isEmpty {
+        let raw = composition.spelling
+        if raw.isEmpty {
             textDocumentProxy.insertText("\n")
-        } else {
-            textDocumentProxy.insertText(composition.spelling)
+        } else if communityID == nil, scheme != .nine, !isEnteringCode, !composition.hasSelectedSegment,
+                  raw.utf8.contains(where: { (97...122).contains($0) }),
+                  raw.utf8.allSatisfy({ (97...122).contains($0) || $0 == 39 }) {
+            textDocumentProxy.insertText(raw.replacingOccurrences(of: "'", with: ""))
             composition.clear()
-            edgeTouches.removeAll()
+        } else {
+            finishComposition(allowRawFallback: false)
         }
+        edgeTouches.removeAll()
     }
 
     private func button(_ title: String, style: KeyStyle = .candidate,
