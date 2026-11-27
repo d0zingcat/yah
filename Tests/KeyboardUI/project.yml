@@ -1,0 +1,30 @@
+name: KeyboardUI
+options:
+  deploymentTarget:
+    iOS: "16.0"
+settings:
+  GENERATE_INFOPLIST_FILE: YES
+targets:
+  Harness:
+    type: application
+    platform: iOS
+    sources: [Host]
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: local.yah.qa.harness
+  KeyboardUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [Tests]
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: local.yah.qa.keyboarduitests
+      TEST_TARGET_NAME: Harness
+    dependencies:
+      - target: Harness
+schemes:
+  KeyboardUI:
+    build:
+      targets:
+        Harness: all
+        KeyboardUITests: [test]
+    test:
+      targets: [KeyboardUITests]
