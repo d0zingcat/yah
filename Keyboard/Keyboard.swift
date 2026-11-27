@@ -78,7 +78,6 @@ final class KeyboardController: UIInputViewController {
     private var singleSource: (document: UUID, since: Date)?
     private var foregroundStart: (id: UUID, expires: Date)?
     private var standbyLaunch: (id: UUID, expires: Date)?
-    private var offeredSingle: (document: UUID?, until: Date)?
     private var lastDeliveryLookup: (document: UUID, latest: UUID?)?
     private var resultWaitBegan: Date?
     private let voiceStatus = UILabel()
@@ -93,6 +92,7 @@ final class KeyboardController: UIInputViewController {
 
     private var recoverableRecording: UUID?
     private var voiceLinkStandbyActive = false
+    private var isKeyboardVisible = false
 
     deinit {
         if let token = voiceStateToken { notify_cancel(token) }
@@ -151,6 +151,10 @@ final class KeyboardController: UIInputViewController {
 
     /// Non-nil URL asks the system to open the containing app.
     private func requestVoiceURL() -> URL? {
+        guard hasFullAccess else {
+            reportVoice("请前往设置 → 通用 → 键盘 → 键盘 → Yah → 允许完全访问，以使用语音输入。", in: currentDocumentID)
+            return nil
+        }
         let now = Date()
         guard VoiceHandoff.activeRecording() == nil else { updateVoiceHandoff(); return nil }
         if let startingVoice, startingVoice.expires > now { return nil }
@@ -164,7 +168,7 @@ final class KeyboardController: UIInputViewController {
         let ticket = VoiceHandoff.keyboardTicket()?.uuidString ?? "setup"
         let standby = VoiceHandoff.standby()
         if let recording = recoverableRecording {
-            if hasFullAccess, let standby {
+            if let standby {
                 do {
                     try VoiceHandoff.requestRetry(in: standby, recording: recording)
                     if waitingForVoice?.recording == recording { waitingForVoice = nil; resultWaitBegan = nil }
@@ -178,16 +182,7 @@ final class KeyboardController: UIInputViewController {
                 .appendingPathComponent(recording.uuidString)
                 .appendingPathComponent(ticket)
         }
-        if let standby, !hasFullAccess {
-            let document = currentDocumentID
-            if offeredSingle?.until ?? .distantPast <= now || offeredSingle?.document != document {
-                offeredSingle = (document, min(standby.expires, now.addingTimeInterval(16)))
-                reportVoice("请在设置 → 通用 → 键盘 → 键盘 → Yah 允许完全访问。再点语音可单次录音。", in: document)
-                return nil
-            }
-            offeredSingle = nil
-        }
-        if hasFullAccess, let standby {
+        if let standby {
             guard let source = currentDocumentID else {
                 reportVoice("请回到输入框，再点麦克风。", in: nil)
                 return nil
@@ -195,22 +190,16 @@ final class KeyboardController: UIInputViewController {
             _ = startStandbyDictation(in: standby, document: source)
             return nil
         }
-        if hasFullAccess {
-            let launchID = UUID()
-            VoiceDelivery.saveArmedOrigin(launchID: launchID, document: currentDocumentID)
-            try? VoiceHandoff.rememberStandbyLaunch(id: launchID)
-            standbyLaunch = (launchID, now.addingTimeInterval(30))
-            if let document = currentDocumentID { singleSource = (document, now) }
-            else { singleSource = nil }
-            scheduleVoiceLaunchCheck()
-            return URL(string: "local-yah-voice://standby/")!
-                .appendingPathComponent(launchID.uuidString)
-                .appendingPathComponent(ticket)
-        }
+        let launchID = UUID()
+        VoiceDelivery.saveArmedOrigin(launchID: launchID, document: currentDocumentID)
+        try? VoiceHandoff.rememberStandbyLaunch(id: launchID)
+        standbyLaunch = (launchID, now.addingTimeInterval(30))
         if let document = currentDocumentID { singleSource = (document, now) }
         else { singleSource = nil }
         scheduleVoiceLaunchCheck()
-        return URL(string: "local-yah-voice://start/")!.appendingPathComponent(ticket)
+        return URL(string: "local-yah-voice://standby/")!
+            .appendingPathComponent(launchID.uuidString)
+            .appendingPathComponent(ticket)
     }
 
     private func showLaunchFallback() {
@@ -533,7 +522,7 @@ final class KeyboardController: UIInputViewController {
     }
 
     private func maybeAutoStartArmedVoice(in standby: VoiceHandoff.Standby) {
-        guard hasFullAccess, viewIfLoaded?.window != nil,
+        guard hasFullAccess, isKeyboardVisible, viewIfLoaded?.window != nil,
               let document = currentDocumentID,
               let armed = VoiceHandoff.pendingArmedStart(for: standby) else { return }
         if let local = VoiceDelivery.armedOrigin(for: armed.launchID) {
@@ -818,11 +807,18 @@ final class KeyboardController: UIInputViewController {
 
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
+        isKeyboardVisible = true
         updateVoiceHandoff()
+    }
+
+    override func viewWillDisappear(_ animated: Bool) {
+        super.viewWillDisappear(animated)
+        isKeyboardVisible = false
     }
 
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
+        isKeyboardVisible = false
         recordingPreview.clear()
         revealedPreview = nil
         contextualRanking?.clear()
@@ -1106,7 +1102,7 @@ final class KeyboardController: UIInputViewController {
             $0.rebuild()
         }
         controls.addArrangedSubview(language)
-        let enter = button("回车", style: .accent) { $0.insert(defaultText: "\n") }
+        let enter = button("回车", style: .accent) { $0.commitReturn() }
         enterKey = enter
         controls.addArrangedSubview(enter)
         enter.widthAnchor.constraint(equalTo: controls.widthAnchor, multiplier: layout == .compact ? 0.20 : 0.16).isActive = true
@@ -1206,10 +1202,10 @@ final class KeyboardController: UIInputViewController {
     }
 
     private func updateReturnTitle() {
-        let titles: [UIReturnKeyType: String] = [.send: "发送", .search: "搜索", .done: "完成",
+        let titles: [UIReturnKeyType: String] = [.send: "发送", .done: "完成",
             .go: "前往", .next: "下一项", .join: "加入", .continue: "继续"]
         enterKey?.configuration?.title = composition.spelling.isEmpty
-            ? titles[textDocumentProxy.returnKeyType ?? .default, default: "回车"] : "确认"
+            ? titles[textDocumentProxy.returnKeyType ?? .default, default: "回车"] : "回车"
     }
 
     @objc private func moveCursor(_ gesture: UILongPressGestureRecognizer) {
@@ -1334,6 +1330,16 @@ final class KeyboardController: UIInputViewController {
     private func insert(defaultText: String) {
         if composition.spelling.isEmpty { textDocumentProxy.insertText(defaultText) }
         else if let word = composition.select(0) { textDocumentProxy.insertText(word) }
+    }
+
+    private func commitReturn() {
+        if composition.spelling.isEmpty {
+            textDocumentProxy.insertText("\n")
+        } else {
+            textDocumentProxy.insertText(composition.spelling)
+            composition.clear()
+            edgeTouches.removeAll()
+        }
     }
 
     private func button(_ title: String, style: KeyStyle = .candidate,

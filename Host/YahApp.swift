@@ -4,6 +4,8 @@ import UIKit
 import AVFAudio
 import AppIntents
 import Speech
+import ActivityKit
+import os
 
 @main
 struct YahApp: App {
@@ -22,14 +24,6 @@ private final class VoiceNotifications: NSObject, UIApplicationDelegate, UNUserN
         return true
     }
 
-    func application(_ application: UIApplication,
-                     configurationForConnecting connectingSceneSession: UISceneSession,
-                     options: UIScene.ConnectionOptions) -> UISceneConfiguration {
-        let configuration = UISceneConfiguration(name: nil, sessionRole: connectingSceneSession.role)
-        configuration.delegateClass = VoiceSceneDelegate.self
-        return configuration
-    }
-
     func userNotificationCenter(_ center: UNUserNotificationCenter,
                                 didReceive response: UNNotificationResponse) async {
         guard VoicePrompt.recognizes(response) else { return }
@@ -42,35 +36,17 @@ private final class VoiceNotifications: NSObject, UIApplicationDelegate, UNUserN
     }
 }
 
-private final class VoiceSceneDelegate: NSObject, UIWindowSceneDelegate {
-    func scene(_ scene: UIScene,
-               willConnectTo session: UISceneSession,
-               options connectionOptions: UIScene.ConnectionOptions) {
-        recordStandbySources(from: connectionOptions.urlContexts)
-    }
-
-    func scene(_ scene: UIScene, openURLContexts URLContexts: Set<UIOpenURLContext>) {
-        recordStandbySources(from: URLContexts)
-    }
-
-    private func recordStandbySources(from contexts: Set<UIOpenURLContext>) {
-        MainActor.assumeIsolated {
-            for context in contexts {
-                VoiceLaunch.shared.recordStandbySource(context.options.sourceApplication, for: context.url)
-            }
-        }
-    }
-}
-
 @MainActor
 private struct VoiceSetupView: View {
     private enum Phase { case idle, requestingPermission, recording, transcribing }
     @Environment(\.scenePhase) private var scenePhase
     @ObservedObject private var voiceLaunch = VoiceLaunch.shared
     @AppStorage("voiceRecognitionMode") private var recognitionMode = "automatic"
+    @AppStorage("voiceStandbyMinutes") private var standbyMinutes = 10
     @State private var configuration = VoiceConfiguration.defaults
     @State private var recorder = VoiceRecorder()
     @StateObject private var standby = StandbyControl()
+    @StateObject private var liveActivity = VoiceActivityCoordinator()
     @State private var enablingStandby = false
     @State private var enableTask: Task<Void, Never>?
     @AppStorage("deliverRecognizedSpeech") private var deliverRecognizedSpeech = false
@@ -116,7 +92,6 @@ private struct VoiceSetupView: View {
         }
     }
     @State private var handoffOverlay: StandbyHandoffOverlay.State?
-    @State private var pendingArmedReturn: (launchID: UUID, sessionID: UUID)?
     @State private var requestedRecovery: UUID?
     @State private var pendingSpeech: PendingSpeech?
     @State private var startTask: Task<Void, Never>?
@@ -126,6 +101,11 @@ private struct VoiceSetupView: View {
         NavigationStack {
             Form {
                 Section {
+                    Picker("语音待机时间", selection: $standbyMinutes) {
+                        Text("10 分钟（推荐，免跳转）").tag(10)
+                        Text("3 分钟").tag(3)
+                        Text("仅单次（录完即停）").tag(0)
+                    }
                     if let active = standby.session {
                         HStack {
                             Label("连续听写已开启", systemImage: "mic.fill").foregroundStyle(.orange)
@@ -140,10 +120,10 @@ private struct VoiceSetupView: View {
                         Button {
                             enableStandby()
                         } label: {
-                            Label(enablingStandby ? "正在准备麦克风…" : "开启十分钟连续听写", systemImage: "mic")
+                            Label(enablingStandby ? "正在准备麦克风…" : "开启语音待机", systemImage: "mic")
                         }
                         .disabled(phase != .idle || enablingStandby)
-                        Text("先在系统设置 → 通用 → 键盘 → 键盘 → Yah 中开启「允许完全访问」。开启连续听写后，麦克风橙点会亮起，待命声音会被丢弃。只有在键盘上点开始后才会录下本段。十分钟后自动结束。")
+                        Text("先在系统设置 → 通用 → 键盘 → 键盘 → Yah 中开启「允许完全访问」。待机时麦克风橙点会亮起，待命声音会被丢弃。只有在键盘上点开始后才会录下本段；待机结束后橙点熄灭。")
                             .font(.footnote).foregroundStyle(.secondary)
                     }
                 }
@@ -278,6 +258,7 @@ private struct VoiceSetupView: View {
             }
             .navigationTitle("Yah")
             .onAppear {
+                syncLiveActivity()
                 if VoiceHandoff.keyboardTicket() == nil { try? VoiceHandoff.issueKeyboardTicket() }
                 VoiceHandoff.clearExpired()
                 if phase == .idle { pendingSpeech = PendingSpeech.restore() }
@@ -329,7 +310,7 @@ private struct VoiceSetupView: View {
                         consumeStandbyLaunch()
                     } else if phase == .idle {
                         if VoiceHandoff.keyboardTicket() == nil { try? VoiceHandoff.issueKeyboardTicket() }
-                        show("首次使用，请点「开启十分钟连续听写」。下次点键盘麦克风将自动开启待机。", succeeded: true)
+                        show("首次使用，请点「开启语音待机」。下次点键盘麦克风将自动开启待机。", succeeded: true)
                     }
                     return
                 }
@@ -343,20 +324,16 @@ private struct VoiceSetupView: View {
             }
             .onChange(of: voiceLaunch.standbyLaunch) { _ in consumeStandbyLaunch() }
             .onChange(of: voiceLaunch.request) { _ in consumeVoiceLaunch() }
+            .onChange(of: standbyMinutes) { minutes in
+                if minutes == 0 {
+                    if phase != .recording && phase != .requestingPermission { endStandby() }
+                } else if standby.session != nil {
+                    refreshStandbyDeadline()
+                }
+            }
             .onDisappear { if recorder.keyboardSessionID == nil && standby.session == nil { cancelRecording() } }
             .onChange(of: scenePhase) { value in
-                if value == .inactive {
-                    if let pending = pendingArmedReturn, let active = standby.session, pending.sessionID == active.id {
-                        try? VoiceHandoff.publishArmedStart(launchID: pending.launchID, sessionID: active.id)
-                    }
-                }
                 if value == .background {
-                    if let pending = pendingArmedReturn, let active = standby.session, pending.sessionID == active.id {
-                        pendingArmedReturn = nil
-                        if VoiceHandoff.pendingArmedStart(for: active) != nil {
-                            try? VoiceHandoff.publishArmedStart(launchID: pending.launchID, sessionID: active.id)
-                        }
-                    }
                     handoffOverlay = nil
                     if enablingStandby { endStandby() }
                     if recorder.keyboardSessionID == nil && standby.session == nil { cancelRecording() }
@@ -384,11 +361,10 @@ private struct VoiceSetupView: View {
             if let handoffOverlay {
                 StandbyHandoffOverlay(
                     state: handoffOverlay,
+                    standbyMinutes: standbyMinutes,
                     onStayInApp: {
-                        self.pendingArmedReturn = nil
                         self.handoffOverlay = nil
                         VoiceHandoff.clearArmedStart(sessionID: standby.session?.id)
-                        voiceLaunch.clearStandbySource()
                     },
                     onEndStandby: { endStandby() }
                 )
@@ -400,8 +376,8 @@ private struct VoiceSetupView: View {
         if let active = standby.session {
             if let launchID, phase == .idle {
                 refreshStandbyDeadline()
-                let expires = standby.session?.expires ?? active.expires
-                armStandbyReturn(launchID: launchID, sessionID: active.id, expires: expires)
+                guard let current = standby.session, current.id == active.id else { return }
+                armStandbyReturn(launchID: launchID, sessionID: current.id, expires: current.expires)
             }
             return
         }
@@ -411,15 +387,15 @@ private struct VoiceSetupView: View {
         enableTask = Task {
             defer { enablingStandby = false; enableTask = nil }
             do {
-                try await recorder.enableStandby()
+                try await recorder.enableStandby(duration: TimeInterval(max(standbyMinutes, 10) * 60))
                 try Task.checkCancellation()
                 guard let expires = recorder.standbyDeadline, scenePhase != .background,
                       UIApplication.shared.isProtectedDataAvailable else { throw CancellationError() }
                 recorder.standbyDidEnd = {
-                    pendingArmedReturn = nil
                     handoffOverlay = nil
                     VoiceHandoff.clearArmedStart()
                     standby.finish()
+                    syncLiveActivity()
                 }
                 try standby.begin(until: expires, onStart: { id in
                     guard phase == .idle else {
@@ -433,57 +409,70 @@ private struct VoiceSetupView: View {
                           job.recording == id else { return }
                     resumeSpeech(job)
                 }, onEnd: { endStandby() })
+                syncLiveActivity()
                 if let launchID, let active = standby.session {
                     armStandbyReturn(launchID: launchID, sessionID: active.id, expires: active.expires)
                 } else {
                     show("连续听写已开启。现在可以回到原输入框。", succeeded: true)
                 }
             } catch {
-                pendingArmedReturn = nil
                 handoffOverlay = nil
                 VoiceHandoff.clearArmedStart()
-                voiceLaunch.clearStandbySource()
                 recorder.disableStandby()
                 standby.finish()
+                syncLiveActivity()
                 if !Task.isCancelled { show(error.localizedDescription, succeeded: false) }
             }
         }
     }
 
     private func armStandbyReturn(launchID: UUID, sessionID: UUID, expires: Date) {
-        pendingArmedReturn = (launchID, sessionID)
         try? VoiceHandoff.publishArmedStart(launchID: launchID, sessionID: sessionID)
         UINotificationFeedbackGenerator().notificationOccurred(.success)
         handoffOverlay = .ready(launchID: launchID, expires: expires)
-        show("十分钟待机语音已开启。返回原输入框后将自动开始识别。", succeeded: true)
-        attemptAutoReturn(for: launchID)
-    }
-
-    private func attemptAutoReturn(for launchID: UUID) {
-        guard let returnURL = voiceLaunch.consumeReturnURL(for: launchID) else { return }
-        Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 100_000_000)
-            guard scenePhase == .active,
-                  let active = standby.session,
-                  VoiceHandoff.pendingArmedStart(for: active)?.launchID == launchID else { return }
-            UIApplication.shared.open(returnURL, options: [:]) { _ in }
-        }
+        show("语音待机已开启。返回原输入框后将自动开始识别。", succeeded: true)
     }
 
     private func endStandby() {
         enableTask?.cancel()
-        pendingArmedReturn = nil
         handoffOverlay = nil
         VoiceHandoff.clearArmedStart()
-        voiceLaunch.clearStandbySource()
         recorder.disableStandby()
         standby.finish()
+        syncLiveActivity()
     }
 
     private func refreshStandbyDeadline() {
-        if let next = recorder.extendStandby() {
-            standby.extend(until: next)
+        guard standbyMinutes > 0 else { return }
+        if let next = recorder.extendStandby(duration: TimeInterval(standbyMinutes * 60)) {
+            do {
+                try standby.extend(until: next)
+                syncLiveActivity()
+            } catch {
+                endStandby()
+                show("无法更新语音待机，请重试。", succeeded: false)
+            }
         }
+    }
+
+    private func syncLiveActivity() {
+        let activityPhase: String
+        switch phase {
+        case .recording: activityPhase = "listening"
+        case .transcribing: activityPhase = "transcribing"
+        case .idle, .requestingPermission: activityPhase = "standby"
+        }
+        liveActivity.sync(
+            session: standby.session,
+            phase: activityPhase,
+            started: VoiceHandoff.activeRecording()?.started,
+            recording: phase == .recording || phase == .transcribing ? recorder.keyboardSessionID : nil
+        )
+    }
+
+    private func finishStandbyAfterRecording() {
+        if standbyMinutes > 0 { refreshStandbyDeadline() }
+        else { endStandby() }
     }
 
     private func consumeStandbyLaunch(isActive: Bool? = nil) {
@@ -539,12 +528,12 @@ private struct VoiceSetupView: View {
     }
 
     private func startRecording(forKeyboard: Bool = false, requestedID: UUID? = nil) {
-        if requestedID == nil { pendingArmedReturn = nil }
         func reportFailure(_ text: String) {
             if let requestedID {
                 VoiceHandoff.publishFailure(text, for: requestedID)
                 VoiceHandoff.clearStart(requestedID)
             }
+            if standby.session != nil { endStandby() }
             show(text, succeeded: false)
         }
         if let pending = pendingSpeech {
@@ -595,6 +584,7 @@ private struct VoiceSetupView: View {
                     if let id = recorder.keyboardSessionID { VoiceHandoff.publishFailure(error.localizedDescription, for: id) }
                     recorder.disconnectKeyboard()
                     phase = .idle
+                    finishStandbyAfterRecording()
                     reportFailure(error.localizedDescription)
                 }
             }
@@ -619,6 +609,7 @@ private struct VoiceSetupView: View {
                         refreshStandbyDeadline()
                     }
                     phase = .recording
+                    syncLiveActivity()
                     show(forKeyboard ? "正在录音，切回目标输入框后点键盘上的停止。" : "正在录音…", succeeded: true)
                 } catch {
                     guard !Task.isCancelled else { return }
@@ -627,6 +618,7 @@ private struct VoiceSetupView: View {
                     recorder.cancel()
                     recorder.disconnectKeyboard()
                     phase = .idle
+                    endStandby()
                     reportFailure(error.localizedDescription)
                 }
             }
@@ -644,6 +636,8 @@ private struct VoiceSetupView: View {
                 if background != .invalid { UIApplication.shared.endBackgroundTask(background); background = .invalid }
             }
         }
+        finishStandbyAfterRecording()
+        syncLiveActivity()
         transcriptionTask = Task {
             await transcribe(audioURL: file, using: stored, useAppleSpeech: useAppleSpeech,
                              automaticFallback: automaticFallback, recording: recording)
@@ -652,7 +646,7 @@ private struct VoiceSetupView: View {
             recorder.disconnectKeyboard()
             if background != .invalid { UIApplication.shared.endBackgroundTask(background); background = .invalid }
             phase = .idle
-            if standby.session != nil { refreshStandbyDeadline() }
+            syncLiveActivity()
             resumeIfRequested()
         }
     }
@@ -667,7 +661,8 @@ private struct VoiceSetupView: View {
         recorder.disconnectKeyboard()
         draft = ""
         phase = .idle
-        refreshStandbyDeadline()
+        finishStandbyAfterRecording()
+        syncLiveActivity()
     }
 
     private func cancelRecording() {
@@ -682,6 +677,8 @@ private struct VoiceSetupView: View {
         recorder.cancel()
         recorder.disconnectKeyboard()
         phase = .idle
+        endStandby()
+        syncLiveActivity()
         show("录音已取消。", succeeded: false)
     }
 
@@ -796,6 +793,43 @@ private struct VoiceSetupView: View {
 }
 
 @MainActor
+private final class VoiceActivityCoordinator: ObservableObject {
+    private var operation: Task<Void, Never>?
+    private let logger = Logger(subsystem: "local.yah.ios", category: "VoiceLiveActivity")
+
+    func sync(session: VoiceHandoff.Standby?, phase: String, started: Date?, recording: UUID?) {
+        guard #available(iOS 16.2, *) else { return }
+        let previous = operation
+        operation = Task { @MainActor in
+            await previous?.value
+            let activities = Activity<VoiceStandbyAttributes>.activities
+            for activity in activities where activity.attributes.sessionID != session?.id {
+                await activity.end(nil, dismissalPolicy: .immediate)
+            }
+            guard let session else { return }
+            let currentPhase = VoiceStandbyAttributes.ContentState.Phase(rawValue: phase) ?? .standby
+            let state = VoiceStandbyAttributes.ContentState(
+                phase: currentPhase,
+                expires: session.expires,
+                started: started,
+                recordingID: recording
+            )
+            let content = ActivityContent(state: state, staleDate: session.expires)
+            if let activity = activities.first(where: { $0.attributes.sessionID == session.id }) {
+                await activity.update(content)
+            } else if ActivityAuthorizationInfo().areActivitiesEnabled {
+                do {
+                    _ = try Activity.request(attributes: VoiceStandbyAttributes(sessionID: session.id),
+                                             content: content, pushType: nil)
+                } catch {
+                    logger.error("Unable to start voice Live Activity: \(error.localizedDescription, privacy: .public)")
+                }
+            }
+        }
+    }
+}
+
+@MainActor
 private final class StandbyControl: ObservableObject {
     @Published private(set) var session: VoiceHandoff.Standby?
     private var expires: Date?
@@ -842,13 +876,13 @@ private final class StandbyControl: ObservableObject {
         }
     }
 
-    func extend(until newExpiry: Date) {
+    func extend(until newExpiry: Date) throws {
         guard var current = session else { return }
         expires = newExpiry
         current.expires = newExpiry
         current.updated = Date()
         session = current
-        try? VoiceHandoff.publishStandby(current, notify: true)
+        try VoiceHandoff.publishStandby(current, notify: true)
     }
 
     func finish() {
@@ -865,6 +899,7 @@ private final class StandbyControl: ObservableObject {
 
 private struct StandbyHandoffOverlay: View {
     let state: State
+    let standbyMinutes: Int
     let onStayInApp: () -> Void
     let onEndStandby: () -> Void
     @State private var nudge = false
@@ -901,7 +936,7 @@ private struct StandbyHandoffOverlay: View {
                     VStack(spacing: 16) {
                         ProgressView()
                             .controlSize(.large)
-                        Text("正在开启 10 分钟语音待机…")
+                        Text("正在开启语音待机…")
                             .font(.title3.weight(.semibold))
                     }
                 case .ready(_, let expires):
@@ -914,7 +949,7 @@ private struct StandbyHandoffOverlay: View {
                                 .font(.system(size: 38, weight: .semibold))
                                 .foregroundStyle(.orange)
                         }
-                        Text("10 分钟语音待机已开启")
+                        Text(standbyMinutes == 0 ? "单次语音已准备" : "\(standbyMinutes) 分钟语音待机已开启")
                             .font(.title2.weight(.bold))
                             .accessibilityIdentifier("standby-ready-title")
                         Text("返回输入区域后将自动开始语音识别并上屏")
@@ -928,7 +963,7 @@ private struct StandbyHandoffOverlay: View {
                             Text("待机剩余")
                             Text(timerInterval: min(Date(), expires)...expires, countsDown: true)
                                 .monospacedDigit()
-                            Text("· 期间点键盘麦克风免跳转")
+                            if standbyMinutes > 0 { Text("· 期间点键盘麦克风免跳转") }
                         }
                         .font(.footnote.weight(.medium))
                         .foregroundStyle(.secondary)
@@ -967,62 +1002,6 @@ private final class VoiceLaunch: ObservableObject {
     static let shared = VoiceLaunch()
     @Published var request: UUID?
     @Published var standbyLaunch: UUID?
-
-    private struct StandbySource {
-        let launchID: UUID?
-        let bundleID: String
-        let recordedAt: Date
-    }
-
-    private var standbySource: StandbySource?
-
-    private static let hostReturnSchemes: [String: String] = [
-        "com.tencent.xin": "weixin",
-        "com.tencent.ww": "wxwork",
-        "com.tencent.mqq": "mqq",
-        "com.apple.mobilenotes": "mobilenotes",
-        "com.apple.MobileSMS": "sms",
-        "com.apple.mobilemail": "message",
-        "com.apple.reminders": "x-apple-reminderkit",
-        "com.xingin.discover": "xhsdiscover",
-        "com.ss.iphone.ugc.Aweme": "snssdk1128",
-        "com.zhihu.ios": "zhihu",
-        "com.sina.weibo": "sinaweibo",
-        "com.alibaba.DingTalk": "dingtalk",
-        "com.bytedance.ee.lark": "feishu",
-        "com.larksuite.Lark": "lark",
-        "com.atebits.Tweetie2": "twitter",
-        "com.tinyspeck.chatlyio": "slack",
-        "ph.telegra.Telegraph": "tg",
-        "net.whatsapp.WhatsApp": "whatsapp",
-        "com.burbn.instagram": "instagram",
-        "com.hammerandchisel.discord": "discord",
-        "com.openai.chat": "chatgpt",
-        "notion.id": "notion",
-        "md.obsidian": "obsidian",
-        "com.google.chrome.ios": "googlechrome"
-    ]
-
-    func recordStandbySource(_ sourceApplication: String?, for url: URL) {
-        guard url.scheme == "local-yah-voice", url.host == "standby",
-              let bundleID = sourceApplication?.trimmingCharacters(in: .whitespacesAndNewlines),
-              Self.hostReturnSchemes[bundleID] != nil else { return }
-        let launchID = url.pathComponents.count == 3 ? UUID(uuidString: url.pathComponents[1]) : nil
-        standbySource = StandbySource(launchID: launchID, bundleID: bundleID, recordedAt: Date())
-    }
-
-    func consumeReturnURL(for launchID: UUID) -> URL? {
-        guard let source = standbySource else { return nil }
-        standbySource = nil
-        guard (0..<30).contains(Date().timeIntervalSince(source.recordedAt)),
-              source.launchID == nil || source.launchID == launchID,
-              let scheme = Self.hostReturnSchemes[source.bundleID] else { return nil }
-        return URL(string: "\(scheme)://")
-    }
-
-    func clearStandbySource() {
-        standbySource = nil
-    }
 }
 
 struct StartYahVoice: AppIntent {

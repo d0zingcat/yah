@@ -1,7 +1,7 @@
 import XCTest
 
 final class VoiceUI: KeyboardUITest {
-    func testMicrophoneOpensYahFromAnotherApp() {
+    func testMicrophoneGuidesToFullAccess() {
         let yah = XCUIApplication(bundleIdentifier: "local.yah.ios")
         yah.launch()
         host.launch()
@@ -12,15 +12,15 @@ final class VoiceUI: KeyboardUITest {
             .matching(NSPredicate(format: "label == %@", "开始语音输入")).firstMatch
         XCTAssertTrue(microphone.waitForExistence(timeout: 4), host.debugDescription)
         microphone.tap()
-        XCTAssertTrue(yah.wait(for: .runningForeground, timeout: 6))
-        XCTAssertTrue(yah.staticTexts["请在系统设置中允许 Yah 使用麦克风。"].waitForExistence(timeout: 8))
-        XCTAssertFalse(yah.buttons["结束录音并转写"].exists)
+        XCTAssertTrue(host.staticTexts["请前往设置 → 通用 → 键盘 → 键盘 → Yah → 允许完全访问，以使用语音输入。"]
+            .waitForExistence(timeout: 6), host.debugDescription)
+        XCTAssertEqual(host.state, .runningForeground)
     }
 
     func testDeniedMicrophoneLeavesContinuousDictationOff() {
         let yah = XCUIApplication(bundleIdentifier: "local.yah.ios")
         yah.launch()
-        let start = yah.buttons["开启十分钟连续听写"]
+        let start = yah.buttons["开启语音待机"]
         XCTAssertTrue(start.waitForExistence(timeout: 4))
         start.tap()
         XCTAssertTrue(yah.staticTexts["请在系统设置中允许 Yah 使用麦克风。"].waitForExistence(timeout: 6))

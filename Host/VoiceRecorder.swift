@@ -286,7 +286,6 @@ final class VoiceRecorder: NSObject {
         previewLevels = []
     }
 
-    private static let standbyDuration: TimeInterval = 10 * 60
     private(set) var standbyDeadline: Date?
     var standbyDidEnd: (() -> Void)?
     private var engine: AVAudioEngine?
@@ -319,7 +318,7 @@ final class VoiceRecorder: NSObject {
         } catch { throw VoiceRecorderError.recordingUnavailable }
     }
 
-    func enableStandby() async throws {
+    func enableStandby(duration: TimeInterval = 10 * 60) async throws {
         if let deadline = standbyDeadline, deadline > Date() { return }
         guard recorder == nil, pendingStart == nil, pendingStandby == nil else { throw VoiceRecorderError.recordingUnavailable }
         if capture != nil { endStandby(keeping: true) }
@@ -346,7 +345,7 @@ final class VoiceRecorder: NSObject {
             deactivateAudio()
             throw VoiceRecorderError.recordingUnavailable
         }
-        let capture = StandbyCapture(input: format, duration: Self.standbyDuration)
+        let capture = StandbyCapture(input: format, duration: duration)
         capture.install(on: input) { [weak self, weak capture] boundary in
             Task { @MainActor in
                 guard let self, let capture, self.capture === capture else { return }
@@ -365,8 +364,8 @@ final class VoiceRecorder: NSObject {
         }
         self.engine = engine
         self.capture = capture
-        standbyDeadline = Date().addingTimeInterval(Self.standbyDuration)
-        scheduleDeadlineTimer(for: capture)
+        standbyDeadline = Date().addingTimeInterval(duration)
+        scheduleDeadlineTimer(for: capture, duration: duration)
         configurationObserver = NotificationCenter.default.addObserver(
             forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main
         ) { [weak self] _ in
@@ -383,17 +382,17 @@ final class VoiceRecorder: NSObject {
     }
 
     @discardableResult
-    func extendStandby() -> Date? {
-        guard let capture, capture.extend(by: Self.standbyDuration) else { return nil }
-        let next = Date().addingTimeInterval(Self.standbyDuration)
+    func extendStandby(duration: TimeInterval = 10 * 60) -> Date? {
+        guard let capture, capture.extend(by: duration) else { return nil }
+        let next = Date().addingTimeInterval(duration)
         standbyDeadline = next
-        scheduleDeadlineTimer(for: capture)
+        scheduleDeadlineTimer(for: capture, duration: duration)
         return next
     }
 
-    private func scheduleDeadlineTimer(for capture: StandbyCapture) {
+    private func scheduleDeadlineTimer(for capture: StandbyCapture, duration: TimeInterval) {
         deadlineTimer?.invalidate()
-        deadlineTimer = Timer.scheduledTimer(withTimeInterval: Self.standbyDuration, repeats: false) { [weak self] _ in
+        deadlineTimer = Timer.scheduledTimer(withTimeInterval: duration, repeats: false) { [weak self] _ in
             Task { @MainActor in
                 guard let self, self.capture === capture else { return }
                 self.endStandby(keeping: true)

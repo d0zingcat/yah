@@ -98,4 +98,13 @@ asc builds add-groups --build-id "$build_id" \
 asc builds info --build-id "$build_id" --include buildBetaDetail,betaGroups --output json
 ```
 
-当 `internalBuildState` 为 `IN_BETA_TESTING` 且包含 Yah Internal 时，组内成员可在 TestFlight 安装或更新。保留本地 IPA、归档及操作回执供排查。真机安装和输入验收单独记录，步骤见 [设计与执行手册](DESIGN-AND-EXECUTION.md)。
+当 `internalBuildState` 为 `IN_BETA_TESTING` 且包含 Yah Internal 时，组内成员可在 TestFlight 安装或更新。真机安装和输入验收单独记录，步骤见 [设计与执行手册](DESIGN-AND-EXECUTION.md)。
+
+## 4. 清理构建产物（必做）
+
+确认构建已 `VALID` 且完成分发后，立即删除体积较大的 `.xcarchive` 和 `.ipa`（仅保留体积很小的 `.json`/`.log` 回执与导出配置），并清理本次验证产生的临时 DerivedData 或 `.xcresult`：
+
+```sh
+rm -rf "$artifact_dir/Yah.xcarchive" "$artifact_dir/Yah.ipa"
+du -sh .asc/artifacts/* /tmp/yah-* 2>/dev/null || true
+```

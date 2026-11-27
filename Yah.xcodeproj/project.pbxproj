@@ -399,6 +399,7 @@
 				<string>00000000000000000000006A</string>
 				<string>000000000000000000000071</string>
 				<string>000000000000000000000074</string>
+				<string>F20000000000000000000004</string>
 			</array>
 			<key>isa</key>
 			<string>PBXSourcesBuildPhase</string>
@@ -430,11 +431,12 @@
 			<key>files</key>
 			<array>
 				<string>000000000000000000000018</string>
+				<string>F2000000000000000000000C</string>
 			</array>
 			<key>isa</key>
 			<string>PBXCopyFilesBuildPhase</string>
 			<key>name</key>
-			<string>Embed Keyboard</string>
+			<string>Embed App Extensions</string>
 			<key>runOnlyForDeploymentPostprocessing</key>
 			<integer>0</integer>
 		</dict>
@@ -545,6 +547,7 @@
 			<key>dependencies</key>
 			<array>
 				<string>00000000000000000000001A</string>
+				<string>F2000000000000000000000D</string>
 			</array>
 			<key>isa</key>
 			<string>PBXNativeTarget</string>
@@ -586,6 +589,12 @@
 				<string>000000000000000000000068</string>
 				<string>000000000000000000000070</string>
 				<string>000000000000000000000073</string>
+				<string>F20000000000000000000001</string>
+				<string>F20000000000000000000002</string>
+				<string>F20000000000000000000003</string>
+				<string>F20000000000000000000010</string>
+				<string>F20000000000000000000011</string>
+				<string>F20000000000000000000015</string>
 			</array>
 			<key>isa</key>
 			<string>PBXGroup</string>
@@ -654,6 +663,7 @@
 				<string>00000000000000000000000C</string>
 				<string>000000000000000000000014</string>
 				<string>00000000000000000000001E</string>
+				<string>F2000000000000000000000A</string>
 			</array>
 		</dict>
 		<key>000000000000000000000024</key>
@@ -1092,6 +1102,158 @@
 			<string>PBXBuildFile</string>
 			<key>productRef</key>
 			<string>000000000000000000000077</string>
+		</dict>
+		<key>F20000000000000000000001</key>
+		<dict>
+			<key>isa</key><string>PBXFileReference</string>
+			<key>lastKnownFileType</key><string>sourcecode.swift</string>
+			<key>path</key><string>Shared/VoiceLiveActivity.swift</string>
+			<key>sourceTree</key><string>&lt;group&gt;</string>
+		</dict>
+		<key>F20000000000000000000002</key>
+		<dict>
+			<key>isa</key><string>PBXFileReference</string>
+			<key>lastKnownFileType</key><string>sourcecode.swift</string>
+			<key>path</key><string>YahLiveActivity/VoiceLiveActivityWidget.swift</string>
+			<key>sourceTree</key><string>&lt;group&gt;</string>
+		</dict>
+		<key>F20000000000000000000003</key>
+		<dict>
+			<key>isa</key><string>PBXFileReference</string>
+			<key>explicitFileType</key><string>wrapper.app-extension</string>
+			<key>path</key><string>YahLiveActivity.appex</string>
+			<key>sourceTree</key><string>BUILT_PRODUCTS_DIR</string>
+		</dict>
+		<key>F20000000000000000000004</key>
+		<dict><key>isa</key><string>PBXBuildFile</string><key>fileRef</key><string>F20000000000000000000001</string></dict>
+		<key>F20000000000000000000005</key>
+		<dict><key>isa</key><string>PBXBuildFile</string><key>fileRef</key><string>F20000000000000000000001</string></dict>
+		<key>F20000000000000000000006</key>
+		<dict><key>isa</key><string>PBXBuildFile</string><key>fileRef</key><string>F20000000000000000000002</string></dict>
+		<key>F20000000000000000000007</key>
+		<dict><key>isa</key><string>PBXBuildFile</string><key>fileRef</key><string>000000000000000000000068</string></dict>
+		<key>F20000000000000000000008</key>
+		<dict>
+			<key>isa</key><string>PBXSourcesBuildPhase</string>
+			<key>buildActionMask</key><integer>2147483647</integer>
+			<key>files</key><array><string>F20000000000000000000005</string><string>F20000000000000000000006</string><string>F20000000000000000000007</string></array>
+			<key>runOnlyForDeploymentPostprocessing</key><integer>0</integer>
+		</dict>
+		<key>F20000000000000000000016</key>
+		<dict>
+			<key>isa</key><string>PBXBuildFile</string>
+			<key>fileRef</key><string>F20000000000000000000015</string>
+		</dict>
+		<key>F20000000000000000000009</key>
+		<dict>
+			<key>isa</key><string>XCConfigurationList</string>
+			<key>buildConfigurations</key><array><string>F2000000000000000000000E</string><string>F2000000000000000000000F</string></array>
+			<key>defaultConfigurationIsVisible</key><integer>0</integer>
+			<key>defaultConfigurationName</key><string>Release</string>
+		</dict>
+		<key>F2000000000000000000000A</key>
+		<dict>
+			<key>isa</key><string>PBXNativeTarget</string>
+			<key>buildConfigurationList</key><string>F20000000000000000000009</string>
+			<key>buildPhases</key><array><string>F20000000000000000000008</string><string>F20000000000000000000013</string><string>F20000000000000000000014</string></array>
+			<key>buildRules</key><array/>
+			<key>dependencies</key><array/>
+			<key>name</key><string>YahLiveActivity</string>
+			<key>productName</key><string>YahLiveActivity</string>
+			<key>productReference</key><string>F20000000000000000000003</string>
+			<key>productType</key><string>com.apple.product-type.app-extension</string>
+		</dict>
+		<key>F2000000000000000000000C</key>
+		<dict>
+			<key>isa</key><string>PBXBuildFile</string>
+			<key>fileRef</key><string>F20000000000000000000003</string>
+			<key>settings</key><dict><key>ATTRIBUTES</key><array><string>CodeSignOnCopy</string><string>RemoveHeadersOnCopy</string></array></dict>
+		</dict>
+		<key>F2000000000000000000000D</key>
+		<dict><key>isa</key><string>PBXTargetDependency</string><key>targetProxy</key><string>F20000000000000000000012</string><key>target</key><string>F2000000000000000000000A</string></dict>
+		<key>F2000000000000000000000E</key>
+		<dict>
+			<key>isa</key><string>XCBuildConfiguration</string><key>name</key><string>Debug</string>
+			<key>buildSettings</key>
+			<dict>
+				<key>APPLICATION_EXTENSION_API_ONLY</key><string>YES</string>
+				<key>CODE_SIGN_ENTITLEMENTS</key><string>YahLiveActivity/YahLiveActivity.entitlements</string>
+				<key>CODE_SIGN_STYLE</key><string>Automatic</string>
+				<key>DEVELOPMENT_TEAM</key><string>8ZT5SZDD42</string>
+				<key>INFOPLIST_FILE</key><string>YahLiveActivity/Info.plist</string>
+				<key>IPHONEOS_DEPLOYMENT_TARGET</key><string>16.2</string>
+				<key>PRODUCT_BUNDLE_IDENTIFIER</key><string>local.yah.ios.liveactivity</string>
+				<key>PRODUCT_NAME</key><string>YahLiveActivity</string>
+				<key>SDKROOT</key><string>iphoneos</string>
+				<key>SKIP_INSTALL</key><string>YES</string>
+				<key>SWIFT_OBJC_BRIDGING_HEADER</key><string>Shared/VoiceNotifications.h</string>
+				<key>SWIFT_VERSION</key><string>5.0</string>
+				<key>TARGETED_DEVICE_FAMILY</key><string>1,2</string>
+			</dict>
+		</dict>
+		<key>F2000000000000000000000F</key>
+		<dict>
+			<key>isa</key><string>XCBuildConfiguration</string><key>name</key><string>Release</string>
+			<key>buildSettings</key>
+			<dict>
+				<key>APPLICATION_EXTENSION_API_ONLY</key><string>YES</string>
+				<key>CODE_SIGN_ENTITLEMENTS</key><string>YahLiveActivity/YahLiveActivity.entitlements</string>
+				<key>CODE_SIGN_STYLE</key><string>Automatic</string>
+				<key>DEVELOPMENT_TEAM</key><string>8ZT5SZDD42</string>
+				<key>INFOPLIST_FILE</key><string>YahLiveActivity/Info.plist</string>
+				<key>IPHONEOS_DEPLOYMENT_TARGET</key><string>16.2</string>
+				<key>PRODUCT_BUNDLE_IDENTIFIER</key><string>local.yah.ios.liveactivity</string>
+				<key>PRODUCT_NAME</key><string>YahLiveActivity</string>
+				<key>SDKROOT</key><string>iphoneos</string>
+				<key>SKIP_INSTALL</key><string>YES</string>
+				<key>SWIFT_OBJC_BRIDGING_HEADER</key><string>Shared/VoiceNotifications.h</string>
+				<key>SWIFT_VERSION</key><string>5.0</string>
+				<key>TARGETED_DEVICE_FAMILY</key><string>1,2</string>
+			</dict>
+		</dict>
+		<key>F20000000000000000000010</key>
+		<dict>
+			<key>isa</key><string>PBXFileReference</string>
+			<key>lastKnownFileType</key><string>text.plist.xml</string>
+			<key>path</key><string>YahLiveActivity/Info.plist</string>
+			<key>sourceTree</key><string>&lt;group&gt;</string>
+		</dict>
+		<key>F20000000000000000000011</key>
+		<dict>
+			<key>isa</key><string>PBXFileReference</string>
+			<key>lastKnownFileType</key><string>text.plist.entitlements</string>
+			<key>path</key><string>YahLiveActivity/YahLiveActivity.entitlements</string>
+			<key>sourceTree</key><string>&lt;group&gt;</string>
+		</dict>
+		<key>F20000000000000000000012</key>
+		<dict>
+			<key>isa</key><string>PBXContainerItemProxy</string>
+			<key>containerPortal</key><string>000000000000000000000023</string>
+			<key>proxyType</key><integer>1</integer>
+			<key>remoteGlobalIDString</key><string>F2000000000000000000000A</string>
+			<key>remoteInfo</key><string>YahLiveActivity</string>
+		</dict>
+		<key>F20000000000000000000013</key>
+		<dict>
+			<key>isa</key><string>PBXFrameworksBuildPhase</string>
+			<key>buildActionMask</key><integer>2147483647</integer>
+			<key>files</key><array><string>F20000000000000000000016</string></array>
+			<key>runOnlyForDeploymentPostprocessing</key><integer>0</integer>
+		</dict>
+		<key>F20000000000000000000014</key>
+		<dict>
+			<key>isa</key><string>PBXResourcesBuildPhase</string>
+			<key>buildActionMask</key><integer>2147483647</integer>
+			<key>files</key><array/>
+			<key>runOnlyForDeploymentPostprocessing</key><integer>0</integer>
+		</dict>
+		<key>F20000000000000000000015</key>
+		<dict>
+			<key>isa</key><string>PBXFileReference</string>
+			<key>lastKnownFileType</key><string>wrapper.framework</string>
+			<key>name</key><string>AppIntents.framework</string>
+			<key>path</key><string>System/Library/Frameworks/AppIntents.framework</string>
+			<key>sourceTree</key><string>SDKROOT</string>
 		</dict>
 		<key>F000000000000000000000A1</key>
 		<dict>
