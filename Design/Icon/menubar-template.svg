@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <mask id="eye">
+    <rect width="1024" height="1024" fill="white"/>
+    <circle cx="560" cy="520" r="34" fill="black"/>
+  </mask>
+  <g fill="#000" mask="url(#eye)">
+    <rect x="437" y="60" width="150" height="470" rx="75" transform="rotate(-25 512 500)"/>
+    <rect x="437" y="60" width="150" height="470" rx="75" transform="rotate(25 512 500)"/>
+    <circle cx="512" cy="530" r="150"/>
+    <rect x="437" y="530" width="150" height="434" rx="75"/>
+  </g>
+</svg>

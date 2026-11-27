@@ -1,5 +1,29 @@
 import Cocoa
+import Carbon
 import InputMethodKit
+
+if CommandLine.arguments.contains("--install") || CommandLine.arguments.contains("--uninstall") {
+    let installing = CommandLine.arguments.contains("--install")
+    let bundleID = Bundle.main.bundleIdentifier!
+    if installing {
+        let status = TISRegisterInputSource(Bundle.main.bundleURL as CFURL)
+        print("Register \(bundleID): \(status)")
+    }
+
+    let filter = [kTISPropertyBundleID as String: bundleID] as CFDictionary
+    let sources = TISCreateInputSourceList(filter, true)?.takeRetainedValue() as? [TISInputSource] ?? []
+    if sources.isEmpty {
+        print("No input sources found for \(bundleID)")
+    }
+    // Enable only; switching to Yah is left to the user (Ctrl-Space or the input menu).
+    for source in sources {
+        let id = TISGetInputSourceProperty(source, kTISPropertyInputSourceID)
+            .map { Unmanaged<CFString>.fromOpaque($0).takeUnretainedValue() as String } ?? "<unknown>"
+        let status = installing ? TISEnableInputSource(source) : TISDisableInputSource(source)
+        print("\(installing ? "Enable" : "Disable") \(id): \(status)")
+    }
+    exit(0)
+}
 
 @objc(YahController)
 class YahController: IMKInputController {

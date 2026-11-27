@@ -8,6 +8,42 @@
 	<string>56</string>
 	<key>objects</key>
 	<dict>
+		<key>A91C78F4E6384C6DA4200001</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXFileReference</string>
+			<key>lastKnownFileType</key>
+			<string>folder.assetcatalog</string>
+			<key>path</key>
+			<string>Mac/Assets.xcassets</string>
+			<key>sourceTree</key>
+			<string>&lt;group&gt;</string>
+		</dict>
+		<key>A91C78F4E6384C6DA4200002</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXFileReference</string>
+			<key>lastKnownFileType</key>
+			<string>image.tiff</string>
+			<key>path</key>
+			<string>Mac/MenuIcon.tiff</string>
+			<key>sourceTree</key>
+			<string>&lt;group&gt;</string>
+		</dict>
+		<key>A91C78F4E6384C6DA4200003</key>
+		<dict>
+			<key>fileRef</key>
+			<string>A91C78F4E6384C6DA4200001</string>
+			<key>isa</key>
+			<string>PBXBuildFile</string>
+		</dict>
+		<key>A91C78F4E6384C6DA4200004</key>
+		<dict>
+			<key>fileRef</key>
+			<string>A91C78F4E6384C6DA4200002</string>
+			<key>isa</key>
+			<string>PBXBuildFile</string>
+		</dict>
 		<key>000000000000000000000001</key>
 		<dict>
 			<key>isa</key>
@@ -96,6 +132,8 @@
 		<dict>
 			<key>buildSettings</key>
 			<dict>
+				<key>ASSETCATALOG_COMPILER_APPICON_NAME</key>
+				<string>AppIcon</string>
 				<key>CLANG_ENABLE_MODULES</key>
 				<string>YES</string>
 				<key>CLANG_ENABLE_OBJC_ARC</key>
@@ -110,7 +148,7 @@
 					<string>-lc++</string>
 				</array>
 				<key>PRODUCT_BUNDLE_IDENTIFIER</key>
-				<string>local.yah.mac</string>
+				<string>local.yah.inputmethod.mac</string>
 				<key>PRODUCT_NAME</key>
 				<string>YahMac</string>
 				<key>SDKROOT</key>
@@ -127,6 +165,8 @@
 		<dict>
 			<key>buildSettings</key>
 			<dict>
+				<key>ASSETCATALOG_COMPILER_APPICON_NAME</key>
+				<string>AppIcon</string>
 				<key>CLANG_ENABLE_MODULES</key>
 				<string>YES</string>
 				<key>CLANG_ENABLE_OBJC_ARC</key>
@@ -141,7 +181,7 @@
 					<string>-lc++</string>
 				</array>
 				<key>PRODUCT_BUNDLE_IDENTIFIER</key>
-				<string>local.yah.mac</string>
+				<string>local.yah.inputmethod.mac</string>
 				<key>PRODUCT_NAME</key>
 				<string>YahMac</string>
 				<key>SDKROOT</key>
@@ -573,6 +613,8 @@
 				<string>F100000000000000000000C1</string>
 				<string>F100000000000000000000C2</string>
 				<string>000000000000000000000002</string>
+				<string>A91C78F4E6384C6DA4200001</string>
+				<string>A91C78F4E6384C6DA4200002</string>
 				<string>000000000000000000000003</string>
 				<string>F000000000000000000000A1</string>
 				<string>000000000000000000000004</string>
@@ -769,6 +811,8 @@
 			<key>files</key>
 			<array>
 				<string>00000000000000000000002D</string>
+				<string>A91C78F4E6384C6DA4200003</string>
+				<string>A91C78F4E6384C6DA4200004</string>
 			</array>
 			<key>isa</key>
 			<string>PBXResourcesBuildPhase</string>
