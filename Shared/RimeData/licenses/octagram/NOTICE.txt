@@ -1,0 +1,26 @@
+Yah simplified Chinese word-bigram model
+2026-11-27
+
+yah-octagram-zh-hans.gram is a modification of zh-hans-t-essay-bgw.gram
+from the RIME project lotem/rime-octagram-data. Both this model and its
+modification are distributed under the GNU LGPL version 3. See the
+accompanying COPYING.LESSER and COPYING.
+
+Original data and its licence (pinned revision)
+https://github.com/lotem/rime-octagram-data/tree/f8ce3b534733e489a8470a7c2adf5a154e8ea069
+https://raw.githubusercontent.com/lotem/rime-octagram-data/f8ce3b534733e489a8470a7c2adf5a154e8ea069/zh-hans-t-essay-bgw.gram
+
+Yah retains all 112603 entries whose original encoded score is at least
+110000 and preserves their original scores. The resulting model occupies
+1227820 bytes. The conversion source accompanies this notice. The required
+Darts-clone header is available from the following revision.
+https://github.com/s-yata/darts-clone/tree/87b71afd6cf784953e3c08f24c64203397f3b724
+
+In the Yah source tree, run Tools/Octagram/rebuild.sh. To rebuild directly,
+place the original model, saved as upstream.gram, and the pinned include/darts.h
+in the same directory as prune-word-bigrams.cpp, then run these commands.
+c++ -std=c++17 -O2 -I . prune-word-bigrams.cpp -o prune
+./prune upstream.gram yah-octagram-zh-hans.gram
+
+Output SHA-256
+5761d5a7e1972269f534356ed6499e2ad1857a55d2e8576c1f277ee1d800a8f8

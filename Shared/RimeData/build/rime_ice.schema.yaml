@@ -1,11 +1,11 @@
 __build_info:
   rime_version: 1.17.0
   timestamps:
-    default: 1795526335
+    default: 1795708814
     default.custom: 0
     rime_ice.custom: 0
-    rime_ice.schema: 1795526335
-    symbols_v: 1795526335
+    rime_ice.schema: 1795741167
+    symbols_v: 1795526551
     symbols_v.custom: 0
 cn_en:
   comment_format:
@@ -57,6 +57,8 @@ engine:
     - "lua_filter@*reduce_english_filter"
     - "simplifier@emoji"
     - "simplifier@traditionalize"
+    - "simplifier@taiwanese"
+    - "simplifier@hongkong"
     - "lua_filter@*search@radical_pinyin"
     - uniquifier
   processors:
@@ -90,6 +92,19 @@ engine:
     - "lua_translator@*number_translator"
     - "lua_translator@*calc_translator"
     - "lua_translator@*force_gc"
+grammar:
+  collocation_penalty: "-20"
+  language: "yah-octagram-zh-hans"
+  non_collocation_penalty: "-10"
+  rear_penalty: "-24"
+hongkong:
+  opencc_config: s2hk.json
+  option_name: yah_hongkong
+  tags:
+    - abc
+    - number
+    - gregorian_to_lunar
+  tips: none
 key_binder:
   bindings:
     - {accept: "Shift+Tab", send: "Shift+Left", when: composing}
@@ -869,8 +884,9 @@ switches:
     states: ["中", "Ａ"]
   - name: ascii_punct
     states: ["¥", "$"]
-  - name: traditionalization
-    states: ["简", "繁"]
+  - options: [yah_simplified, traditionalization, yah_taiwan, yah_hongkong]
+    reset: 0
+    states: ["简体", "通用繁体", "台湾繁体", "香港繁体"]
   - name: emoji
     reset: 1
     states: ["💀", "😄"]
@@ -879,6 +895,14 @@ switches:
   - abbrev: ["词", "单"]
     name: search_single_char
     states: ["正常", "单字"]
+taiwanese:
+  opencc_config: s2twp.json
+  option_name: yah_taiwan
+  tags:
+    - abc
+    - number
+    - gregorian_to_lunar
+  tips: none
 traditionalize:
   opencc_config: s2t.json
   option_name: traditionalization
@@ -892,9 +916,13 @@ translator:
   comment_format:
     - "xform/^/［/"
     - "xform/$/］/"
+  contextual_suggestions: true
   dictionary: rime_ice
   enable_word_completion: true
   initial_quality: 1.2
+  max_homographs: 7
+  max_homophones: 7
+  max_sentences: 2
   preedit_format:
     - "xform/([jqxy])v/$1u/"
     - "xform/([nl])v/$1v/"

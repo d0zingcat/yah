@@ -1,0 +1,36 @@
+schema: {schema_id: yah_xiaohe, name: yah_xiaohe, version: '1', dependencies: [melt_eng, radical_pinyin]}
+__include: rime_ice.schema:/
+__patch:
+  schema/schema_id: yah_xiaohe
+  schema/name: 雾凇小鹤双拼
+  translator/prism: yah_xiaohe
+  speller/algebra:
+    - xform/^([aoe])([ioun])$/$1$1$2/
+    - xform/^([aoe])(ng)$/$1$1$2/
+    - xform/^([aoe])$/$1$1/
+    - xform/iu$/Q/
+    - xform/(.)ei$/$1W/
+    - xform/uan$/R/
+    - xform/[uv]e$/T/
+    - xform/un$/Y/
+    - xform/^sh/U/
+    - xform/^ch/I/
+    - xform/^zh/V/
+    - xform/uo$/O/
+    - xform/ie$/P/
+    - xform/i?ong$/S/
+    - xform/ing$|uai$/K/
+    - xform/(.)ai$/$1D/
+    - xform/(.)en$/$1F/
+    - xform/(.)eng$/$1G/
+    - xform/[iu]ang$/L/
+    - xform/(.)ang$/$1H/
+    - xform/ian$/M/
+    - xform/(.)an$/$1J/
+    - xform/iao$/N/
+    - xform/(.)ao$/$1C/
+    - xform/(.)ou$/$1Z/
+    - xform/i[ae]$|ua$/X/
+    - xform/ui$/V/
+    - xform/in$/B/
+    - xlit/QWRTYUIVOPSKDFGLHMJNCZXB/qwrtyuivopskdfglhmjnczxb/

@@ -1,0 +1,12 @@
+schema: {schema_id: yah_t9, name: yah_t9, version: '1', dependencies: [melt_eng, radical_pinyin]}
+__include: rime_ice.schema:/
+__patch:
+  schema/schema_id: yah_t9
+  schema/name: 雾凇九宫格
+  translator/prism: yah_t9
+  speller/alphabet: ABCDEFGH
+  speller/initials: ABCDEFGH
+  speller/algebra:
+    - xlit/abcdefghijklmnopqrstuvwxyz/AAABBBCCCDDDEEEFFFFGGGHHHH/
+  translator/preedit_format:
+    - xlit/ABCDEFGH/23456789/

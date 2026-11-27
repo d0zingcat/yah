@@ -1,3 +1,6 @@
-# Xcode user-specific settings and window state
+.DS_Store
 xcuserdata/
 *.xcuserstate
+DerivedData/
+.build/
+*.xcresult

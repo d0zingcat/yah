@@ -1,0 +1,18 @@
+Yah contextual candidate ranking, Chinese word vectors
+
+Based on “Learning Word Vectors for 157 Languages” (2018), by Edouard Grave,
+Piotr Bojanowski, Prakhar Gupta, Armand Joulin and Tomas Mikolov.
+https://aclanthology.org/L18-1550/
+https://fasttext.cc/docs/en/crawl-vectors.html
+Original Common Crawl and Wikipedia vectors:
+https://dl.fbaipublicfiles.com/fasttext/vectors-crawl/cc.zh.300.vec.gz
+
+The original vectors and Yah's adapted data are licensed under Creative Commons
+Attribution-ShareAlike 3.0 Unported. See LICENSE.txt and
+https://creativecommons.org/licenses/by-sa/3.0/
+
+Yah selects the first 48,000 two-to-four Han character terms in original
+frequency order, folds the 300 dimensions into 64 using a fixed signed
+projection and quantizes each vector independently to signed 8-bit values.
+The conversion is reproducible using Tools/ContextVectors/rebuild.py.
+SHA-256: f53c9b9cbfa6f7243506025d4431753a98f4e16cda933dc4528b651c5055b285
