@@ -69,7 +69,7 @@ asc xcode export --archive-path "$artifact_dir/Yah.xcarchive" \
 ```sh
 asc ipa-info --path "$artifact_dir/Yah.ipa" --include-entitlements \
   --verify-signature --output json > "$artifact_dir/ipa-info.json"
-unzip -Z1 "$artifact_dir/Yah.ipa" | rg 'Keyboard.appex/Keyboard$|ggml-base-q5_1.bin$'
+unzip -Z1 "$artifact_dir/Yah.ipa" | rg 'Keyboard.appex/Keyboard$'
 ```
 
 ## 3. 上传并验证内部测试分发

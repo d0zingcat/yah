@@ -1,7 +1,6 @@
 import AVFAudio
 import Darwin
 import Foundation
-import YahOfflineSpeech
 
 enum VoiceRecorderError: LocalizedError {
     case permissionDenied
@@ -239,21 +238,20 @@ final class VoiceRecorder: NSObject {
 
     private var recorder: AVAudioRecorder?
 
-    private var previewConfiguration: (offline: Bool, handler: (String, [Float]) -> Void)?
+    private var previewConfiguration: ((String, [Float]) -> Void)?
     private var levelTask: Task<Void, Never>?
-    private var draftTask: Task<Void, Never>?
     private var previewDraft = ""
     private var previewLevels: [Float] = []
     private var previewID = UUID()
 
-    /// Live level bars and, when `offline` is set, a rolling draft decoded from the unfinished WAV.
-    func configurePreview(offline: Bool, handler: @escaping (String, [Float]) -> Void) {
-        previewConfiguration = (offline, handler)
+    /// Live level bars read from the unfinished WAV.
+    func configurePreview(handler: @escaping (String, [Float]) -> Void) {
+        previewConfiguration = handler
     }
 
     private func pushPreview() {
-        guard let configuration = previewConfiguration else { return }
-        configuration.handler(previewDraft, previewLevels)
+        guard let handler = previewConfiguration else { return }
+        handler(previewDraft, previewLevels)
         if var session = keyboardSession {
             session.updatePreview(text: previewDraft, levels: previewLevels)
             keyboardSession = session
@@ -263,7 +261,7 @@ final class VoiceRecorder: NSObject {
 
     private func startPreview(url: URL) {
         stopPreview()
-        guard let configuration = previewConfiguration else { return }
+        guard previewConfiguration != nil else { return }
         let id = UUID()
         previewID = id
         previewDraft = ""
@@ -279,29 +277,13 @@ final class VoiceRecorder: NSObject {
                 self.pushPreview()
             }
         }
-        guard configuration.offline else { return }
-        draftTask = Task { @MainActor [weak self] in
-            while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 400_000_000)
-                guard !Task.isCancelled, let self, self.previewID == id else { break }
-                guard let samples = await reader.speechSamples() else { continue }
-                guard let text = try? await OfflineSpeech.shared.preview(samples, recording: id),
-                      !text.isEmpty, !Task.isCancelled, self.previewID == id else { continue }
-                self.previewDraft = text
-                self.pushPreview()
-            }
-        }
     }
 
     private func stopPreview() {
         levelTask?.cancel()
         levelTask = nil
-        draftTask?.cancel()
-        draftTask = nil
         previewDraft = ""
         previewLevels = []
-        let id = previewID
-        Task { await OfflineSpeech.shared.endPreview(recording: id) }
     }
 
     private static let standbyDuration: TimeInterval = 10 * 60
@@ -549,5 +531,58 @@ extension VoiceRecorder: @preconcurrency AVAudioRecorderDelegate {
         guard recorder != nil else { return }
         cancel()
         didFinish?(.failure(VoiceRecorderError.recordingUnavailable))
+    }
+}
+
+/// Reads the trailing PCM of an unfinished 16 kHz mono WAV to draw level bars.
+private actor RecordingPreview {
+    private let url: URL
+    private var dataOffset: UInt64?
+
+    init(recording url: URL) { self.url = url }
+
+    private func pcmOffset() -> UInt64? {
+        if let dataOffset { return dataOffset }
+        var file: AudioFileID?
+        guard AudioFileOpenURL(url as CFURL, .readPermission, kAudioFileWAVEType, &file) == noErr,
+              let file else { return nil }
+        defer { AudioFileClose(file) }
+        var format = AudioStreamBasicDescription()
+        var size = UInt32(MemoryLayout.size(ofValue: format))
+        guard AudioFileGetProperty(file, kAudioFilePropertyDataFormat, &size, &format) == noErr,
+              format.mFormatID == kAudioFormatLinearPCM, format.mChannelsPerFrame == 1,
+              format.mSampleRate == 16_000, format.mBytesPerFrame == 2, format.mBitsPerChannel == 16,
+              format.mFormatFlags & kAudioFormatFlagIsSignedInteger != 0,
+              format.mFormatFlags & kAudioFormatFlagIsBigEndian == 0 else { return nil }
+        var offset: Int64 = 0
+        size = UInt32(MemoryLayout.size(ofValue: offset))
+        guard AudioFileGetProperty(file, kAudioFilePropertyDataOffset, &size, &offset) == noErr,
+              offset > 0 else { return nil }
+        dataOffset = UInt64(offset)
+        return dataOffset
+    }
+
+    func levels(barCount: Int = 16) -> [Float]? {
+        let windowFrames = max(1, barCount) * 800
+        guard !Task.isCancelled, let offset = pcmOffset(), let file = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? file.close() }
+        guard let extent = try? file.seekToEnd(), extent > offset else { return nil }
+        let frames = Int((extent - offset) / 2)
+        let window = min(frames, windowFrames)
+        guard window > 0, (try? file.seek(toOffset: offset + UInt64(frames - window) * 2)) != nil,
+              let data = try? file.read(upToCount: window * 2), data.count == window * 2 else { return nil }
+        let samples: [Float] = data.withUnsafeBytes { bytes in
+            (0..<window).map {
+                Float(Int16(littleEndian: bytes.loadUnaligned(fromByteOffset: $0 * 2, as: Int16.self))) / 32768
+            }
+        }
+        // Each bar covers the RMS power of 50 ms. Keep quiet speech visible while preserving zero for silence.
+        return (0..<barCount).map { index in
+            let end = window - (barCount - 1 - index) * 800
+            guard end > 0 else { return 0 }
+            let block = samples[max(0, end - 800)..<end]
+            let power = block.reduce(Float(0)) { $0 + $1 * $1 } / Float(block.count)
+            return min(1, max(0, (10 * log10(max(power, 1e-10)) + 56) / 50))
+        }
     }
 }

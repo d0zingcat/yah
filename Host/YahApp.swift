@@ -1,4 +1,3 @@
-import YahOfflineSpeech
 import UserNotifications
 import SwiftUI
 import UIKit
@@ -23,6 +22,14 @@ private final class VoiceNotifications: NSObject, UIApplicationDelegate, UNUserN
         return true
     }
 
+    func application(_ application: UIApplication,
+                     configurationForConnecting connectingSceneSession: UISceneSession,
+                     options: UIScene.ConnectionOptions) -> UISceneConfiguration {
+        let configuration = UISceneConfiguration(name: nil, sessionRole: connectingSceneSession.role)
+        configuration.delegateClass = VoiceSceneDelegate.self
+        return configuration
+    }
+
     func userNotificationCenter(_ center: UNUserNotificationCenter,
                                 didReceive response: UNNotificationResponse) async {
         guard VoicePrompt.recognizes(response) else { return }
@@ -32,6 +39,26 @@ private final class VoiceNotifications: NSObject, UIApplicationDelegate, UNUserN
     func userNotificationCenter(_ center: UNUserNotificationCenter,
                                 willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
         [.banner, .list]
+    }
+}
+
+private final class VoiceSceneDelegate: NSObject, UIWindowSceneDelegate {
+    func scene(_ scene: UIScene,
+               willConnectTo session: UISceneSession,
+               options connectionOptions: UIScene.ConnectionOptions) {
+        recordStandbySources(from: connectionOptions.urlContexts)
+    }
+
+    func scene(_ scene: UIScene, openURLContexts URLContexts: Set<UIOpenURLContext>) {
+        recordStandbySources(from: URLContexts)
+    }
+
+    private func recordStandbySources(from contexts: Set<UIOpenURLContext>) {
+        MainActor.assumeIsolated {
+            for context in contexts {
+                VoiceLaunch.shared.recordStandbySource(context.options.sourceApplication, for: context.url)
+            }
+        }
     }
 }
 
@@ -49,7 +76,6 @@ private struct VoiceSetupView: View {
     @AppStorage("deliverRecognizedSpeech") private var deliverRecognizedSpeech = false
     @State private var transcript = ""
     @State private var draft = ""
-    @AppStorage("offlineDictationPreview") private var offlinePreview = true
     @State private var message = ""
     @State private var phase = Phase.idle
     @State private var transcriptionTask: Task<Void, Never>?
@@ -160,7 +186,7 @@ private struct VoiceSetupView: View {
                         ProgressView("正在转写…")
                     }
                     if phase == .idle, let pending = pendingSpeech {
-                        Button("继续上次离线转写") { resumeSpeech(pending) }
+                        Button("继续上次本机转写") { resumeSpeech(pending) }
                         Button("丢弃上次录音", role: .destructive) {
                             pending.remove()
                             pendingSpeech = nil
@@ -208,15 +234,11 @@ private struct VoiceSetupView: View {
                 Section("语音服务") {
                     Picker("识别方式", selection: $recognitionMode) {
                         Text("自动").tag("automatic")
-                        Text("内置离线中文识别").tag("offline")
                         Text("Apple 设备端中文识别").tag("device")
                         Text("ElevenLabs").tag("cloud")
                     }
                     Text("自动模式优先使用已保存的服务。服务失败时，同一段录音会转为本机识别。")
                         .font(.footnote)
-                    if recognitionMode == "offline" || recognitionMode == "automatic" {
-                        Toggle("显示离线听写草稿", isOn: $offlinePreview)
-                    }
                     if recognitionMode == "automatic" || recognitionMode == "cloud" {
                     Picker("服务商", selection: $configuration.provider) {
                         ForEach(VoiceConfiguration.Provider.allCases) { provider in
@@ -276,7 +298,7 @@ private struct VoiceSetupView: View {
                 if url.host == "resume" {
                     guard url.pathComponents.count == 3, let id = UUID(uuidString: url.pathComponents[1]),
                           VoiceHandoff.acceptKeyboardLink(url) else {
-                        show("请点「继续上次离线转写」。", succeeded: false)
+                        show("请点「继续上次本机转写」。", succeeded: false)
                         return
                     }
                     if phase == .idle { pendingSpeech = PendingSpeech.restore() }
@@ -299,6 +321,12 @@ private struct VoiceSetupView: View {
                         _ = VoiceHandoff.takeStandbyLaunch()
                         voiceLaunch.standbyLaunch = launchID
                         consumeStandbyLaunch()
+                    } else if url.pathComponents.count == 3,
+                              let parsed = UUID(uuidString: url.pathComponents[1]),
+                              VoiceHandoff.takeStandbyLaunch() == parsed {
+                        if VoiceHandoff.keyboardTicket() == nil { try? VoiceHandoff.issueKeyboardTicket() }
+                        voiceLaunch.standbyLaunch = parsed
+                        consumeStandbyLaunch()
                     } else if phase == .idle {
                         if VoiceHandoff.keyboardTicket() == nil { try? VoiceHandoff.issueKeyboardTicket() }
                         show("首次使用，请点「开启十分钟连续听写」。下次点键盘麦克风将自动开启待机。", succeeded: true)
@@ -317,10 +345,17 @@ private struct VoiceSetupView: View {
             .onChange(of: voiceLaunch.request) { _ in consumeVoiceLaunch() }
             .onDisappear { if recorder.keyboardSessionID == nil && standby.session == nil { cancelRecording() } }
             .onChange(of: scenePhase) { value in
+                if value == .inactive {
+                    if let pending = pendingArmedReturn, let active = standby.session, pending.sessionID == active.id {
+                        try? VoiceHandoff.publishArmedStart(launchID: pending.launchID, sessionID: active.id)
+                    }
+                }
                 if value == .background {
                     if let pending = pendingArmedReturn, let active = standby.session, pending.sessionID == active.id {
                         pendingArmedReturn = nil
-                        try? VoiceHandoff.publishArmedStart(launchID: pending.launchID, sessionID: active.id)
+                        if VoiceHandoff.pendingArmedStart(for: active) != nil {
+                            try? VoiceHandoff.publishArmedStart(launchID: pending.launchID, sessionID: active.id)
+                        }
                     }
                     handoffOverlay = nil
                     if enablingStandby { endStandby() }
@@ -352,6 +387,8 @@ private struct VoiceSetupView: View {
                     onStayInApp: {
                         self.pendingArmedReturn = nil
                         self.handoffOverlay = nil
+                        VoiceHandoff.clearArmedStart(sessionID: standby.session?.id)
+                        voiceLaunch.clearStandbySource()
                     },
                     onEndStandby: { endStandby() }
                 )
@@ -364,10 +401,7 @@ private struct VoiceSetupView: View {
             if let launchID, phase == .idle {
                 refreshStandbyDeadline()
                 let expires = standby.session?.expires ?? active.expires
-                pendingArmedReturn = (launchID, active.id)
-                UINotificationFeedbackGenerator().notificationOccurred(.success)
-                handoffOverlay = .ready(launchID: launchID, expires: expires)
-                show("十分钟待机语音已开启。返回原输入框后将自动开始识别。", succeeded: true)
+                armStandbyReturn(launchID: launchID, sessionID: active.id, expires: expires)
             }
             return
         }
@@ -400,10 +434,7 @@ private struct VoiceSetupView: View {
                     resumeSpeech(job)
                 }, onEnd: { endStandby() })
                 if let launchID, let active = standby.session {
-                    pendingArmedReturn = (launchID, active.id)
-                    UINotificationFeedbackGenerator().notificationOccurred(.success)
-                    handoffOverlay = .ready(launchID: launchID, expires: active.expires)
-                    show("十分钟待机语音已开启。返回原输入框后将自动开始识别。", succeeded: true)
+                    armStandbyReturn(launchID: launchID, sessionID: active.id, expires: active.expires)
                 } else {
                     show("连续听写已开启。现在可以回到原输入框。", succeeded: true)
                 }
@@ -411,10 +442,31 @@ private struct VoiceSetupView: View {
                 pendingArmedReturn = nil
                 handoffOverlay = nil
                 VoiceHandoff.clearArmedStart()
+                voiceLaunch.clearStandbySource()
                 recorder.disableStandby()
                 standby.finish()
                 if !Task.isCancelled { show(error.localizedDescription, succeeded: false) }
             }
+        }
+    }
+
+    private func armStandbyReturn(launchID: UUID, sessionID: UUID, expires: Date) {
+        pendingArmedReturn = (launchID, sessionID)
+        try? VoiceHandoff.publishArmedStart(launchID: launchID, sessionID: sessionID)
+        UINotificationFeedbackGenerator().notificationOccurred(.success)
+        handoffOverlay = .ready(launchID: launchID, expires: expires)
+        show("十分钟待机语音已开启。返回原输入框后将自动开始识别。", succeeded: true)
+        attemptAutoReturn(for: launchID)
+    }
+
+    private func attemptAutoReturn(for launchID: UUID) {
+        guard let returnURL = voiceLaunch.consumeReturnURL(for: launchID) else { return }
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 100_000_000)
+            guard scenePhase == .active,
+                  let active = standby.session,
+                  VoiceHandoff.pendingArmedStart(for: active)?.launchID == launchID else { return }
+            UIApplication.shared.open(returnURL, options: [:]) { _ in }
         }
     }
 
@@ -423,6 +475,7 @@ private struct VoiceSetupView: View {
         pendingArmedReturn = nil
         handoffOverlay = nil
         VoiceHandoff.clearArmedStart()
+        voiceLaunch.clearStandbySource()
         recorder.disableStandby()
         standby.finish()
     }
@@ -481,7 +534,7 @@ private struct VoiceSetupView: View {
         }
         pendingSpeech = pending
         phase = .transcribing
-        finishSpeech(pending.file, using: nil, useAppleSpeech: false, automaticFallback: false)
+        finishSpeech(pending.file, using: nil, useAppleSpeech: true, automaticFallback: false)
 
     }
 
@@ -516,10 +569,10 @@ private struct VoiceSetupView: View {
                 reportFailure("请先保存修改后的语音配置。")
                 return
             }
-            let useAppleSpeech = recognitionMode == "device"
+            let useAppleSpeech = stored == nil
             let automaticFallback = recognitionMode == "automatic" && stored != nil
             draft = ""
-            recorder.configurePreview(offline: stored == nil && !useAppleSpeech && offlinePreview) { text, _ in
+            recorder.configurePreview { text, _ in
                 if phase == .recording, scenePhase == .active, draft != text { draft = text }
             }
             phase = .requestingPermission
@@ -657,12 +710,12 @@ private struct VoiceSetupView: View {
                     guard automaticFallback else { throw error }
                     preservingFailedProviderAudio = false
                     usedFallback = true
-                    result = try await OfflineSpeech.shared.transcribe(audioURL)
+                    result = try await DeviceSpeech().transcribe(audioURL)
                 }
             } else if useAppleSpeech {
                 result = try await DeviceSpeech().transcribe(audioURL)
             } else {
-                result = try await OfflineSpeech.shared.transcribe(audioURL)
+                result = try await DeviceSpeech().transcribe(audioURL)
             }
             try Task.checkCancellation()
             transcript = result
@@ -681,7 +734,7 @@ private struct VoiceSetupView: View {
                Task.isCancelled || preservingFailedProviderAudio {
                 keepForRetry = true
                 let hint = Task.isCancelled ? "系统已暂停转写。" : "本次服务未完成转写。"
-                let message = hint + "五分钟内可用本机模型重试同一段录音。"
+                let message = hint + "五分钟内可用 Apple 本机识别重试同一段录音。"
                 if let recording { VoiceHandoff.publishFailure(message, for: recording) }
                 show(message, succeeded: false)
             } else {
@@ -914,6 +967,62 @@ private final class VoiceLaunch: ObservableObject {
     static let shared = VoiceLaunch()
     @Published var request: UUID?
     @Published var standbyLaunch: UUID?
+
+    private struct StandbySource {
+        let launchID: UUID?
+        let bundleID: String
+        let recordedAt: Date
+    }
+
+    private var standbySource: StandbySource?
+
+    private static let hostReturnSchemes: [String: String] = [
+        "com.tencent.xin": "weixin",
+        "com.tencent.ww": "wxwork",
+        "com.tencent.mqq": "mqq",
+        "com.apple.mobilenotes": "mobilenotes",
+        "com.apple.MobileSMS": "sms",
+        "com.apple.mobilemail": "message",
+        "com.apple.reminders": "x-apple-reminderkit",
+        "com.xingin.discover": "xhsdiscover",
+        "com.ss.iphone.ugc.Aweme": "snssdk1128",
+        "com.zhihu.ios": "zhihu",
+        "com.sina.weibo": "sinaweibo",
+        "com.alibaba.DingTalk": "dingtalk",
+        "com.bytedance.ee.lark": "feishu",
+        "com.larksuite.Lark": "lark",
+        "com.atebits.Tweetie2": "twitter",
+        "com.tinyspeck.chatlyio": "slack",
+        "ph.telegra.Telegraph": "tg",
+        "net.whatsapp.WhatsApp": "whatsapp",
+        "com.burbn.instagram": "instagram",
+        "com.hammerandchisel.discord": "discord",
+        "com.openai.chat": "chatgpt",
+        "notion.id": "notion",
+        "md.obsidian": "obsidian",
+        "com.google.chrome.ios": "googlechrome"
+    ]
+
+    func recordStandbySource(_ sourceApplication: String?, for url: URL) {
+        guard url.scheme == "local-yah-voice", url.host == "standby",
+              let bundleID = sourceApplication?.trimmingCharacters(in: .whitespacesAndNewlines),
+              Self.hostReturnSchemes[bundleID] != nil else { return }
+        let launchID = url.pathComponents.count == 3 ? UUID(uuidString: url.pathComponents[1]) : nil
+        standbySource = StandbySource(launchID: launchID, bundleID: bundleID, recordedAt: Date())
+    }
+
+    func consumeReturnURL(for launchID: UUID) -> URL? {
+        guard let source = standbySource else { return nil }
+        standbySource = nil
+        guard (0..<30).contains(Date().timeIntervalSince(source.recordedAt)),
+              source.launchID == nil || source.launchID == launchID,
+              let scheme = Self.hostReturnSchemes[source.bundleID] else { return nil }
+        return URL(string: "\(scheme)://")
+    }
+
+    func clearStandbySource() {
+        standbySource = nil
+    }
 }
 
 struct StartYahVoice: AppIntent {

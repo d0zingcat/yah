@@ -16,7 +16,7 @@ private struct KeyboardVoiceLink: View {
         } label: {
             Group {
                 if recovery != nil {
-                    Text("离线重试")
+                    Text("本机重试")
                 } else if standbyActive {
                     Image(systemName: "mic.fill")
                         .font(.system(size: 16, weight: .semibold))
@@ -33,9 +33,9 @@ private struct KeyboardVoiceLink: View {
         }
         .buttonStyle(.plain)
         .foregroundStyle(Color.primary)
-        .accessibilityLabel(recovery == nil ? "开始语音输入" : "离线重试上次转写")
+        .accessibilityLabel(recovery == nil ? "开始语音输入" : "本机重试上次转写")
         .accessibilityValue(recovery == nil && standbyActive ? "待机已开启" : "")
-        .accessibilityInputLabels(recovery == nil ? ["开始语音输入"] : ["离线重试", "继续上次离线转写", "继续"])
+        .accessibilityInputLabels(recovery == nil ? ["开始语音输入"] : ["本机重试", "继续上次本机转写", "继续"])
     }
 }
 
@@ -170,7 +170,7 @@ final class KeyboardController: UIInputViewController {
                     if waitingForVoice?.recording == recording { waitingForVoice = nil; resultWaitBegan = nil }
                     retryingVoice = (recording, currentDocumentID, now.addingTimeInterval(VoiceHandoff.startRequestLifetime))
                     updateVoiceHandoff()
-                } catch { reportVoice("未能请求离线重试，请再点一次。", in: currentDocumentID) }
+                } catch { reportVoice("未能请求本机重试，请再点一次。", in: currentDocumentID) }
                 return nil
             }
             scheduleVoiceLaunchCheck()
@@ -395,7 +395,7 @@ final class KeyboardController: UIInputViewController {
                 return
             }
             if recoverableRecording != nil {
-                hint?.text = "请打开 Yah，点「继续上次离线转写」。"
+                hint?.text = "请打开 Yah，点「继续上次本机转写」。"
                 UIAccessibility.post(notification: .announcement, argument: hint?.text)
                 return
             }
@@ -538,10 +538,10 @@ final class KeyboardController: UIInputViewController {
               let armed = VoiceHandoff.pendingArmedStart(for: standby) else { return }
         if let local = VoiceDelivery.armedOrigin(for: armed.launchID) {
             let matchesDocument = local.document == document || local.document == nil
-            let recentReturn = Date().timeIntervalSince(armed.readyAt) < 15
+            let recentReturn = Date().timeIntervalSince(armed.readyAt) < 30
             guard matchesDocument || recentReturn else { return }
         } else {
-            guard Date().timeIntervalSince(armed.readyAt) < 15 else { return }
+            guard Date().timeIntervalSince(armed.readyAt) < 30 else { return }
         }
         guard VoiceHandoff.consumeArmedStart(armed.launchID, in: standby) != nil else { return }
         VoiceDelivery.clearArmedOrigin(armed.launchID)
@@ -576,7 +576,7 @@ final class KeyboardController: UIInputViewController {
                 retryingVoice = nil
             } else if retry.until <= now {
                 retryingVoice = nil
-                voiceMessage = (VoiceHandoff.failure(for: retry.recording) ?? "Yah 未确认离线重试，请再点一次。",
+                voiceMessage = (VoiceHandoff.failure(for: retry.recording) ?? "Yah 未确认本机重试，请再点一次。",
                                 retry.document, now.addingTimeInterval(16))
             }
         }
@@ -654,7 +654,7 @@ final class KeyboardController: UIInputViewController {
 
         var status: String?
         if let ending = endingStandby, ending.document == document { status = "正在请求结束连续听写…" }
-        else if let retry = retryingVoice, retry.document == document { status = "正在请求离线重试…" }
+        else if let retry = retryingVoice, retry.document == document { status = "正在请求本机重试…" }
         else if let starting = startingVoice, starting.document == document { status = "正在请求 Yah 开始录音…" }
         else if let message = voiceMessage, message.document == nil || message.document == document { status = message.text }
         else if visibleSession == nil, resultWaitBegan != nil, waitingForVoice?.document == document { status = "正在等待转写结果…" }

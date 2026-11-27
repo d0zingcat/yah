@@ -8,42 +8,6 @@
 	<string>56</string>
 	<key>objects</key>
 	<dict>
-		<key>F100000000000000000000C1</key>
-		<dict>
-			<key>isa</key>
-			<string>PBXFileReference</string>
-			<key>lastKnownFileType</key>
-			<string>sourcecode.swift</string>
-			<key>path</key>
-			<string>Keyboard/ContextualRanking.swift</string>
-			<key>sourceTree</key>
-			<string>&lt;group&gt;</string>
-		</dict>
-		<key>F100000000000000000000C2</key>
-		<dict>
-			<key>isa</key>
-			<string>PBXFileReference</string>
-			<key>lastKnownFileType</key>
-			<string>folder</string>
-			<key>path</key>
-			<string>Keyboard/ContextModel</string>
-			<key>sourceTree</key>
-			<string>&lt;group&gt;</string>
-		</dict>
-		<key>F100000000000000000000C3</key>
-		<dict>
-			<key>fileRef</key>
-			<string>F100000000000000000000C1</string>
-			<key>isa</key>
-			<string>PBXBuildFile</string>
-		</dict>
-		<key>F100000000000000000000C4</key>
-		<dict>
-			<key>fileRef</key>
-			<string>F100000000000000000000C2</string>
-			<key>isa</key>
-			<string>PBXBuildFile</string>
-		</dict>
 		<key>000000000000000000000001</key>
 		<dict>
 			<key>isa</key>
@@ -74,17 +38,6 @@
 			<string>sourcecode.swift</string>
 			<key>path</key>
 			<string>Keyboard/Keyboard.swift</string>
-			<key>sourceTree</key>
-			<string>&lt;group&gt;</string>
-		</dict>
-		<key>F000000000000000000000A1</key>
-		<dict>
-			<key>isa</key>
-			<string>PBXFileReference</string>
-			<key>lastKnownFileType</key>
-			<string>sourcecode.swift</string>
-			<key>path</key>
-			<string>Keyboard/CandidatePanel.swift</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
@@ -260,13 +213,6 @@
 		<dict>
 			<key>fileRef</key>
 			<string>000000000000000000000003</string>
-			<key>isa</key>
-			<string>PBXBuildFile</string>
-		</dict>
-		<key>F000000000000000000000A2</key>
-		<dict>
-			<key>fileRef</key>
-			<string>F000000000000000000000A1</string>
 			<key>isa</key>
 			<string>PBXBuildFile</string>
 		</dict>
@@ -608,7 +554,6 @@
 			<array>
 				<string>000000000000000000000076</string>
 				<string>000000000000000000000077</string>
-				<string>AF0000000000000000000002</string>
 			</array>
 			<key>productName</key>
 			<string>Yah</string>
@@ -641,7 +586,6 @@
 				<string>000000000000000000000068</string>
 				<string>000000000000000000000070</string>
 				<string>000000000000000000000073</string>
-				<string>AF0000000000000000000004</string>
 			</array>
 			<key>isa</key>
 			<string>PBXGroup</string>
@@ -700,7 +644,6 @@
 			<key>packageReferences</key>
 			<array>
 				<string>000000000000000000000024</string>
-				<string>AF0000000000000000000001</string>
 			</array>
 			<key>projectDirPath</key>
 			<string></string>
@@ -983,7 +926,6 @@
 			<array>
 				<string>000000000000000000000040</string>
 				<string>000000000000000000000061</string>
-				<string>AF0000000000000000000005</string>
 			</array>
 			<key>isa</key>
 			<string>PBXResourcesBuildPhase</string>
@@ -1113,7 +1055,6 @@
 			<array>
 				<string>000000000000000000000078</string>
 				<string>000000000000000000000079</string>
-				<string>AF0000000000000000000003</string>
 			</array>
 			<key>isa</key>
 			<string>PBXFrameworksBuildPhase</string>
@@ -1152,46 +1093,59 @@
 			<key>productRef</key>
 			<string>000000000000000000000077</string>
 		</dict>
-		<key>AF0000000000000000000001</key>
+		<key>F000000000000000000000A1</key>
 		<dict>
 			<key>isa</key>
-			<string>XCLocalSwiftPackageReference</string>
-			<key>relativePath</key>
-			<string>Host/OfflineSpeech</string>
+			<string>PBXFileReference</string>
+			<key>lastKnownFileType</key>
+			<string>sourcecode.swift</string>
+			<key>path</key>
+			<string>Keyboard/CandidatePanel.swift</string>
+			<key>sourceTree</key>
+			<string>&lt;group&gt;</string>
 		</dict>
-		<key>AF0000000000000000000002</key>
+		<key>F000000000000000000000A2</key>
 		<dict>
-			<key>isa</key>
-			<string>XCSwiftPackageProductDependency</string>
-			<key>package</key>
-			<string>AF0000000000000000000001</string>
-			<key>productName</key>
-			<string>YahOfflineSpeech</string>
-		</dict>
-		<key>AF0000000000000000000003</key>
-		<dict>
+			<key>fileRef</key>
+			<string>F000000000000000000000A1</string>
 			<key>isa</key>
 			<string>PBXBuildFile</string>
-			<key>productRef</key>
-			<string>AF0000000000000000000002</string>
 		</dict>
-		<key>AF0000000000000000000004</key>
+		<key>F100000000000000000000C1</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXFileReference</string>
+			<key>lastKnownFileType</key>
+			<string>sourcecode.swift</string>
+			<key>path</key>
+			<string>Keyboard/ContextualRanking.swift</string>
+			<key>sourceTree</key>
+			<string>&lt;group&gt;</string>
+		</dict>
+		<key>F100000000000000000000C2</key>
 		<dict>
 			<key>isa</key>
 			<string>PBXFileReference</string>
 			<key>lastKnownFileType</key>
 			<string>folder</string>
 			<key>path</key>
-			<string>Host/VoiceModel</string>
+			<string>Keyboard/ContextModel</string>
 			<key>sourceTree</key>
-			<string>SOURCE_ROOT</string>
+			<string>&lt;group&gt;</string>
 		</dict>
-		<key>AF0000000000000000000005</key>
+		<key>F100000000000000000000C3</key>
 		<dict>
+			<key>fileRef</key>
+			<string>F100000000000000000000C1</string>
 			<key>isa</key>
 			<string>PBXBuildFile</string>
+		</dict>
+		<key>F100000000000000000000C4</key>
+		<dict>
 			<key>fileRef</key>
-			<string>AF0000000000000000000004</string>
+			<string>F100000000000000000000C2</string>
+			<key>isa</key>
+			<string>PBXBuildFile</string>
 		</dict>
 	</dict>
 	<key>rootObject</key>
