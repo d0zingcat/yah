@@ -26,7 +26,7 @@ struct VoiceHandoff: Codable {
     }
 
     @MainActor static func acceptKeyboardLink(_ url: URL) -> Bool {
-        guard url.scheme == "local-yah-voice", ["start", "resume"].contains(url.host),
+        guard url.scheme == "local-yah-voice", ["start", "standby", "resume"].contains(url.host),
               let ticket = UUID(uuidString: url.lastPathComponent), ticket == keyboardTicket() else { return false }
         do { try issueKeyboardTicket(); return true }
         catch { return false }
@@ -43,6 +43,7 @@ struct VoiceHandoff: Codable {
             try data.write(to: folder.appendingPathComponent(recordingID.uuidString), options: [.atomic, .completeFileProtection])
         }
         try data.write(to: file(), options: [.atomic, .completeFileProtection])
+        notifyStateChanged()
     }
 
     static func pending() -> VoiceHandoff? {
@@ -101,10 +102,12 @@ extension VoiceHandoff {
         }
 
         var stopSignal: String { "local.yah.stop." + id.uuidString }
+        var cancelSignal: String { "local.yah.cancel." + id.uuidString }
     }
 
     static func publishRecording(_ recording: Recording) throws {
         try JSONEncoder().encode(recording).write(to: file("voice-session.json"), options: [.atomic, .completeFileProtection])
+        notifyStateChanged()
     }
 
     static func activeRecording() -> Recording? {
@@ -146,6 +149,7 @@ extension VoiceHandoff {
         guard let url = try? file("voice-session.json"), let data = try? Data(contentsOf: url),
               let state = try? JSONDecoder().decode(Recording.self, from: data), state.id == id else { return }
         try? FileManager.default.removeItem(at: url)
+        notifyStateChanged()
     }
 }
 
@@ -177,9 +181,15 @@ enum VoicePrompt {
 }
 
 extension VoiceHandoff {
+    static let stateNotification = "local.yah.voice.state"
+
+    static func notifyStateChanged() {
+        notify_post(stateNotification)
+    }
+
     struct Standby: Codable {
         let id: UUID
-        let expires: Date
+        var expires: Date
         var updated = Date()
         var signal: String { "local.yah.voice.control." + id.uuidString }
     }
@@ -223,17 +233,20 @@ extension VoiceHandoff {
         return value
     }
 
-    static func publishStandby(_ value: Standby) throws {
+    static func publishStandby(_ value: Standby, notify: Bool = false) throws {
         try write(value, "voice-standby.json")
+        if notify { notifyStateChanged() }
     }
 
     static func finishStandby(_ session: Standby) {
-        try? withControlLock {
-            guard read(Standby.self, "voice-standby.json")?.id == session.id else { return }
-            for name in ["voice-standby.json", "voice-standby-start.json", "voice-standby-end.json", "voice-standby-retry.json"] {
+        let removed = (try? withControlLock { () -> Bool in
+            guard read(Standby.self, "voice-standby.json")?.id == session.id else { return false }
+            for name in ["voice-standby.json", "voice-standby-start.json", "voice-standby-end.json", "voice-standby-retry.json", "voice-standby-armed.json"] {
                 if let url = try? file(name) { try? FileManager.default.removeItem(at: url) }
             }
-        }
+            return true
+        }) ?? false
+        if removed { notifyStateChanged() }
     }
 
     static func pendingStart(in session: Standby) -> UUID? {
@@ -307,6 +320,7 @@ extension VoiceHandoff {
 
     static func publishFailure(_ message: String, for id: UUID) {
         try? write(Failure(id: id, message: message, expires: Date().addingTimeInterval(30)), "voice-failure.json")
+        notifyStateChanged()
     }
 
     static func failure(for id: UUID) -> String? {
@@ -341,6 +355,71 @@ extension VoiceHandoff {
             guard let request = read(ForegroundStart.self, "voice-foreground-start.json") else { return nil }
             try FileManager.default.removeItem(at: file("voice-foreground-start.json"))
             return (0..<15).contains(Date().timeIntervalSince(request.issued)) ? request.id : nil
+        }
+    }
+}
+
+extension VoiceHandoff {
+    private struct StandbyLaunch: Codable {
+        let id: UUID
+        let issued: Date
+    }
+
+    struct ArmedStart: Codable, Equatable {
+        let launchID: UUID
+        let sessionID: UUID
+        let readyAt: Date
+        let expires: Date
+    }
+
+    static func rememberStandbyLaunch(id: UUID) throws {
+        let request = StandbyLaunch(id: id, issued: Date())
+        try withControlLock { try write(request, "voice-standby-launch.json") }
+    }
+
+    static func cancelStandbyLaunch(_ id: UUID) {
+        try? withControlLock {
+            guard read(StandbyLaunch.self, "voice-standby-launch.json")?.id == id else { return }
+            try FileManager.default.removeItem(at: file("voice-standby-launch.json"))
+        }
+    }
+
+    @MainActor static func takeStandbyLaunch() -> UUID? {
+        try? withControlLock {
+            guard let request = read(StandbyLaunch.self, "voice-standby-launch.json") else { return nil }
+            try FileManager.default.removeItem(at: file("voice-standby-launch.json"))
+            return (0..<30).contains(Date().timeIntervalSince(request.issued)) ? request.id : nil
+        }
+    }
+
+    static func publishArmedStart(launchID: UUID, sessionID: UUID, lifetime: TimeInterval = 60) throws {
+        let now = Date()
+        let item = ArmedStart(launchID: launchID, sessionID: sessionID, readyAt: now, expires: now.addingTimeInterval(lifetime))
+        try withControlLock { try write(item, "voice-standby-armed.json") }
+        notifyStateChanged()
+    }
+
+    static func pendingArmedStart(for session: Standby) -> ArmedStart? {
+        guard let item = read(ArmedStart.self, "voice-standby-armed.json"),
+              item.sessionID == session.id, item.expires > Date() else { return nil }
+        return item
+    }
+
+    static func consumeArmedStart(_ launchID: UUID, in session: Standby) -> ArmedStart? {
+        try? withControlLock {
+            guard let item = read(ArmedStart.self, "voice-standby-armed.json"),
+                  item.launchID == launchID, item.sessionID == session.id, item.expires > Date() else { return nil }
+            try FileManager.default.removeItem(at: file("voice-standby-armed.json"))
+            return item
+        }
+    }
+
+    static func clearArmedStart(sessionID: UUID? = nil) {
+        try? withControlLock {
+            if let sessionID {
+                guard read(ArmedStart.self, "voice-standby-armed.json")?.sessionID == sessionID else { return }
+            }
+            try FileManager.default.removeItem(at: file("voice-standby-armed.json"))
         }
     }
 }

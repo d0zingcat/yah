@@ -89,6 +89,8 @@ private struct VoiceSetupView: View {
             if let recording { VoiceHandoff.clearRecovery(recording) }
         }
     }
+    @State private var handoffOverlay: StandbyHandoffOverlay.State?
+    @State private var pendingArmedReturn: (launchID: UUID, sessionID: UUID)?
     @State private var requestedRecovery: UUID?
     @State private var pendingSpeech: PendingSpeech?
     @State private var startTask: Task<Void, Never>?
@@ -258,6 +260,7 @@ private struct VoiceSetupView: View {
                 VoiceHandoff.clearExpired()
                 if phase == .idle { pendingSpeech = PendingSpeech.restore() }
                 loadConfiguration()
+                consumeStandbyLaunch(isActive: scenePhase == .active)
                 consumeVoiceLaunch()
             }
             .task(id: pendingSpeech?.name) {
@@ -285,6 +288,23 @@ private struct VoiceSetupView: View {
                     resumeIfRequested()
                     return
                 }
+                if url.host == "standby" {
+                    let launchID: UUID
+                    if url.pathComponents.count == 3, let parsed = UUID(uuidString: url.pathComponents[1]) {
+                        launchID = parsed
+                    } else {
+                        launchID = UUID()
+                    }
+                    if VoiceHandoff.acceptKeyboardLink(url) {
+                        _ = VoiceHandoff.takeStandbyLaunch()
+                        voiceLaunch.standbyLaunch = launchID
+                        consumeStandbyLaunch()
+                    } else if phase == .idle {
+                        if VoiceHandoff.keyboardTicket() == nil { try? VoiceHandoff.issueKeyboardTicket() }
+                        show("首次使用，请点「开启十分钟连续听写」。下次点键盘麦克风将自动开启待机。", succeeded: true)
+                    }
+                    return
+                }
                 guard url.host == "start" else { return }
                 if VoiceHandoff.acceptKeyboardLink(url) {
                     voiceLaunch.request = UUID()
@@ -293,14 +313,24 @@ private struct VoiceSetupView: View {
                     show("首次使用，请点「开始跨应用语音输入」。下次可直接点键盘麦克风。", succeeded: true)
                 }
             }
+            .onChange(of: voiceLaunch.standbyLaunch) { _ in consumeStandbyLaunch() }
             .onChange(of: voiceLaunch.request) { _ in consumeVoiceLaunch() }
             .onDisappear { if recorder.keyboardSessionID == nil && standby.session == nil { cancelRecording() } }
             .onChange(of: scenePhase) { value in
                 if value == .background {
+                    if let pending = pendingArmedReturn, let active = standby.session, pending.sessionID == active.id {
+                        pendingArmedReturn = nil
+                        try? VoiceHandoff.publishArmedStart(launchID: pending.launchID, sessionID: active.id)
+                    }
+                    handoffOverlay = nil
                     if enablingStandby { endStandby() }
                     if recorder.keyboardSessionID == nil && standby.session == nil { cancelRecording() }
                 }
-                if value == .active { VoiceHandoff.clearExpired(); consumeVoiceLaunch(isActive: true) }
+                if value == .active {
+                    VoiceHandoff.clearExpired()
+                    consumeStandbyLaunch(isActive: true)
+                    consumeVoiceLaunch(isActive: true)
+                }
             }
             .onReceive(NotificationCenter.default.publisher(for: UIApplication.protectedDataWillBecomeUnavailableNotification)) { _ in
                 endStandby()
@@ -314,11 +344,36 @@ private struct VoiceSetupView: View {
                 }
             }
         }
+        .accessibilityHidden(handoffOverlay != nil)
+        .overlay {
+            if let handoffOverlay {
+                StandbyHandoffOverlay(
+                    state: handoffOverlay,
+                    onStayInApp: {
+                        self.pendingArmedReturn = nil
+                        self.handoffOverlay = nil
+                    },
+                    onEndStandby: { endStandby() }
+                )
+            }
+        }
     }
 
-    private func enableStandby() {
-        guard phase == .idle, !enablingStandby, standby.session == nil else { return }
+    private func enableStandby(forKeyboardLaunch launchID: UUID? = nil) {
+        if let active = standby.session {
+            if let launchID, phase == .idle {
+                refreshStandbyDeadline()
+                let expires = standby.session?.expires ?? active.expires
+                pendingArmedReturn = (launchID, active.id)
+                UINotificationFeedbackGenerator().notificationOccurred(.success)
+                handoffOverlay = .ready(launchID: launchID, expires: expires)
+                show("十分钟待机语音已开启。返回原输入框后将自动开始识别。", succeeded: true)
+            }
+            return
+        }
+        guard phase == .idle, !enablingStandby else { return }
         enablingStandby = true
+        if let launchID { handoffOverlay = .arming(launchID) }
         enableTask = Task {
             defer { enablingStandby = false; enableTask = nil }
             do {
@@ -326,7 +381,12 @@ private struct VoiceSetupView: View {
                 try Task.checkCancellation()
                 guard let expires = recorder.standbyDeadline, scenePhase != .background,
                       UIApplication.shared.isProtectedDataAvailable else { throw CancellationError() }
-                recorder.standbyDidEnd = { standby.finish() }
+                recorder.standbyDidEnd = {
+                    pendingArmedReturn = nil
+                    handoffOverlay = nil
+                    VoiceHandoff.clearArmedStart()
+                    standby.finish()
+                }
                 try standby.begin(until: expires, onStart: { id in
                     guard phase == .idle else {
                         VoiceHandoff.publishFailure("请等上一段听写结束后再试。", for: id)
@@ -339,8 +399,18 @@ private struct VoiceSetupView: View {
                           job.recording == id else { return }
                     resumeSpeech(job)
                 }, onEnd: { endStandby() })
-                show("连续听写已开启。现在可以回到原输入框。", succeeded: true)
+                if let launchID, let active = standby.session {
+                    pendingArmedReturn = (launchID, active.id)
+                    UINotificationFeedbackGenerator().notificationOccurred(.success)
+                    handoffOverlay = .ready(launchID: launchID, expires: active.expires)
+                    show("十分钟待机语音已开启。返回原输入框后将自动开始识别。", succeeded: true)
+                } else {
+                    show("连续听写已开启。现在可以回到原输入框。", succeeded: true)
+                }
             } catch {
+                pendingArmedReturn = nil
+                handoffOverlay = nil
+                VoiceHandoff.clearArmedStart()
                 recorder.disableStandby()
                 standby.finish()
                 if !Task.isCancelled { show(error.localizedDescription, succeeded: false) }
@@ -350,8 +420,32 @@ private struct VoiceSetupView: View {
 
     private func endStandby() {
         enableTask?.cancel()
+        pendingArmedReturn = nil
+        handoffOverlay = nil
+        VoiceHandoff.clearArmedStart()
         recorder.disableStandby()
         standby.finish()
+    }
+
+    private func refreshStandbyDeadline() {
+        if let next = recorder.extendStandby() {
+            standby.extend(until: next)
+        }
+    }
+
+    private func consumeStandbyLaunch(isActive: Bool? = nil) {
+        guard scenePhase != .background else { return }
+        let launchID: UUID?
+        if let direct = voiceLaunch.standbyLaunch {
+            launchID = direct
+        } else if isActive ?? (scenePhase == .active) {
+            launchID = VoiceHandoff.takeStandbyLaunch()
+        } else {
+            launchID = nil
+        }
+        guard let launchID else { return }
+        voiceLaunch.standbyLaunch = nil
+        enableStandby(forKeyboardLaunch: launchID)
     }
 
     private func consumeVoiceLaunch(isActive: Bool? = nil) {
@@ -392,6 +486,7 @@ private struct VoiceSetupView: View {
     }
 
     private func startRecording(forKeyboard: Bool = false, requestedID: UUID? = nil) {
+        if requestedID == nil { pendingArmedReturn = nil }
         func reportFailure(_ text: String) {
             if let requestedID {
                 VoiceHandoff.publishFailure(text, for: requestedID)
@@ -428,8 +523,12 @@ private struct VoiceSetupView: View {
                 if phase == .recording, scenePhase == .active, draft != text { draft = text }
             }
             phase = .requestingPermission
+            recorder.didCancelFromKeyboard = {
+                cancelRecordingFromKeyboard()
+            }
             recorder.didFinish = { result in
                 recorder.didFinish = nil
+                recorder.didCancelFromKeyboard = nil
                 switch result {
                 case .success(let url):
                     phase = .transcribing
@@ -462,11 +561,16 @@ private struct VoiceSetupView: View {
                     try await recorder.start()
                     try Task.checkCancellation()
                     if forKeyboard { try recorder.connectKeyboard(id: requestedID ?? UUID()) }
+                    if requestedID != nil {
+                        handoffOverlay = nil
+                        refreshStandbyDeadline()
+                    }
                     phase = .recording
                     show(forKeyboard ? "正在录音，切回目标输入框后点键盘上的停止。" : "正在录音…", succeeded: true)
                 } catch {
                     guard !Task.isCancelled else { return }
                     recorder.didFinish = nil
+                    recorder.didCancelFromKeyboard = nil
                     recorder.cancel()
                     recorder.disconnectKeyboard()
                     phase = .idle
@@ -491,17 +595,33 @@ private struct VoiceSetupView: View {
             await transcribe(audioURL: file, using: stored, useAppleSpeech: useAppleSpeech,
                              automaticFallback: automaticFallback, recording: recording)
             if let recording { VoiceHandoff.clearStart(recording) }
+            recorder.didCancelFromKeyboard = nil
             recorder.disconnectKeyboard()
             if background != .invalid { UIApplication.shared.endBackgroundTask(background); background = .invalid }
             phase = .idle
+            if standby.session != nil { refreshStandbyDeadline() }
             resumeIfRequested()
         }
+    }
+
+    private func cancelRecordingFromKeyboard() {
+        guard phase == .requestingPermission || phase == .recording else { return }
+        startTask?.cancel()
+        recorder.didFinish = nil
+        recorder.didCancelFromKeyboard = nil
+        if let id = recorder.keyboardSessionID { VoiceHandoff.clearStart(id) }
+        recorder.cancel()
+        recorder.disconnectKeyboard()
+        draft = ""
+        phase = .idle
+        refreshStandbyDeadline()
     }
 
     private func cancelRecording() {
         guard phase == .requestingPermission || phase == .recording else { return }
         startTask?.cancel()
         recorder.didFinish = nil
+        recorder.didCancelFromKeyboard = nil
         if let id = recorder.keyboardSessionID {
             VoiceHandoff.publishFailure("本段录音已取消。", for: id)
             VoiceHandoff.clearStart(id)
@@ -625,17 +745,19 @@ private struct VoiceSetupView: View {
 @MainActor
 private final class StandbyControl: ObservableObject {
     @Published private(set) var session: VoiceHandoff.Standby?
+    private var expires: Date?
     private var heartbeat: Timer?
     private var token: Int32?
     private var lastStart: UUID?
 
     func begin(until expires: Date, onStart: @escaping (UUID) -> Void,
                onRetry: @escaping (UUID) -> Void, onEnd: @escaping () -> Void) throws {
+        self.expires = expires
         let value = VoiceHandoff.Standby(id: UUID(), expires: expires)
         var registration: Int32 = 0
         let check = { [weak self] in
             guard let self, self.session?.id == value.id else { return }
-            guard Date() < expires else { return }
+            guard let currentExpiry = self.expires, Date() < currentExpiry else { return }
             if VoiceHandoff.hasRequestedEnd(value) { onEnd(); return }
             if let retry = VoiceHandoff.pendingRetry(in: value) {
                 VoiceHandoff.acknowledgeRetry(retry)
@@ -650,20 +772,30 @@ private final class StandbyControl: ObservableObject {
         guard notify_register_dispatch(value.signal, &registration, .main, { _ in check() }) == NOTIFY_STATUS_OK
         else { throw VoiceRecorderError.recordingUnavailable }
         token = registration
-        do { try VoiceHandoff.publishStandby(value) }
+        do { try VoiceHandoff.publishStandby(value, notify: true) }
         catch { finish(); throw error }
         session = value
         heartbeat = Timer.scheduledTimer(withTimeInterval: 0.75, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 guard let self, var tick = self.session, tick.id == value.id else { return }
                 // The audio engine owns the absolute deadline and finishes a segment at expiry.
-                guard Date() < expires else { return }
+                guard let currentExpiry = self.expires, Date() < currentExpiry else { return }
+                tick.expires = currentExpiry
                 tick.updated = Date()
                 do { try VoiceHandoff.publishStandby(tick) }
                 catch { onEnd(); return }
                 check()
             }
         }
+    }
+
+    func extend(until newExpiry: Date) {
+        guard var current = session else { return }
+        expires = newExpiry
+        current.expires = newExpiry
+        current.updated = Date()
+        session = current
+        try? VoiceHandoff.publishStandby(current, notify: true)
     }
 
     func finish() {
@@ -673,7 +805,107 @@ private final class StandbyControl: ObservableObject {
         token = nil
         if let session { VoiceHandoff.finishStandby(session) }
         session = nil
+        expires = nil
         lastStart = nil
+    }
+}
+
+private struct StandbyHandoffOverlay: View {
+    let state: State
+    let onStayInApp: () -> Void
+    let onEndStandby: () -> Void
+    @State private var nudge = false
+
+    enum State: Equatable {
+        case arming(UUID)
+        case ready(launchID: UUID, expires: Date)
+    }
+
+    var body: some View {
+        ZStack {
+            Color(.systemBackground)
+                .opacity(0.97)
+                .ignoresSafeArea()
+            VStack(spacing: 24) {
+                HStack(spacing: 8) {
+                    Image(systemName: "arrow.up.left")
+                        .font(.title3.weight(.bold))
+                        .foregroundStyle(.orange)
+                        .offset(x: nudge ? -3 : 2, y: nudge ? -3 : 2)
+                    Text("点左上角返回原输入框")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.primary)
+                    Spacer()
+                }
+                .padding(.top, 8)
+                .padding(.horizontal, 20)
+                .accessibilityIdentifier("standby-return-guide")
+
+                Spacer()
+
+                switch state {
+                case .arming:
+                    VStack(spacing: 16) {
+                        ProgressView()
+                            .controlSize(.large)
+                        Text("正在开启 10 分钟语音待机…")
+                            .font(.title3.weight(.semibold))
+                    }
+                case .ready(_, let expires):
+                    VStack(spacing: 16) {
+                        ZStack {
+                            Circle()
+                                .fill(Color.orange.opacity(0.16))
+                                .frame(width: 96, height: 96)
+                            Image(systemName: "mic.fill")
+                                .font(.system(size: 38, weight: .semibold))
+                                .foregroundStyle(.orange)
+                        }
+                        Text("10 分钟语音待机已开启")
+                            .font(.title2.weight(.bold))
+                            .accessibilityIdentifier("standby-ready-title")
+                        Text("返回输入区域后将自动开始语音识别并上屏")
+                            .font(.body)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal, 24)
+                        HStack(spacing: 6) {
+                            Image(systemName: "timer")
+                                .foregroundStyle(.orange)
+                            Text("待机剩余")
+                            Text(timerInterval: min(Date(), expires)...expires, countsDown: true)
+                                .monospacedDigit()
+                            Text("· 期间点键盘麦克风免跳转")
+                        }
+                        .font(.footnote.weight(.medium))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 8)
+                        .background(Capsule().fill(Color.secondary.opacity(0.12)))
+
+                        Text("也可以在屏幕底部向右滑动快速切回")
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+                            .padding(.top, 4)
+                    }
+                }
+
+                Spacer()
+
+                HStack(spacing: 16) {
+                    Button("留在 Yah 设置", action: onStayInApp)
+                        .buttonStyle(.bordered)
+                    Button("结束待机", role: .destructive, action: onEndStandby)
+                        .buttonStyle(.bordered)
+                }
+                .padding(.bottom, 28)
+            }
+        }
+        .onAppear {
+            withAnimation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true)) {
+                nudge = true
+            }
+        }
     }
 }
 
@@ -681,6 +913,7 @@ private final class StandbyControl: ObservableObject {
 private final class VoiceLaunch: ObservableObject {
     static let shared = VoiceLaunch()
     @Published var request: UUID?
+    @Published var standbyLaunch: UUID?
 }
 
 struct StartYahVoice: AppIntent {

@@ -78,7 +78,6 @@ final class KeyboardController: UIInputViewController {
     private var singleSource: (document: UUID, since: Date)?
     private var foregroundStart: (id: UUID, expires: Date)?
     private var standbyLaunch: (id: UUID, expires: Date)?
-    private var suppressAutoStartLaunchID: UUID?
     private var offeredSingle: (document: UUID?, until: Date)?
     private var lastDeliveryLookup: (document: UUID, latest: UUID?)?
     private var resultWaitBegan: Date?
@@ -109,7 +108,7 @@ final class KeyboardController: UIInputViewController {
     private func scheduleVoiceLaunchCheck() {
         voiceLaunchCheck?.cancel()
         voiceLaunchCheck = Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            try? await Task.sleep(nanoseconds: 2_500_000_000)
             guard !Task.isCancelled else { return }
             self?.showLaunchFallback()
         }
@@ -131,6 +130,13 @@ final class KeyboardController: UIInputViewController {
             guard VoiceDelivery.bind(recording, to: source) == source else {
                 reportVoice("另一输入框正在请求录音。", in: source)
                 return false
+            }
+            voiceLaunchCheck?.cancel()
+            if !voiceTools.isHidden {
+                voiceTools.isHidden = true
+                typingHeader?.isHidden = false
+                fallbackVoice.isHidden = true
+                updateCandidateToggle()
             }
             startingVoice = (recording, source, now.addingTimeInterval(VoiceHandoff.startRequestLifetime))
             waitingForVoice = (recording, source)
@@ -191,7 +197,6 @@ final class KeyboardController: UIInputViewController {
         }
         if hasFullAccess {
             let launchID = UUID()
-            suppressAutoStartLaunchID = launchID
             VoiceDelivery.saveArmedOrigin(launchID: launchID, document: currentDocumentID)
             try? VoiceHandoff.rememberStandbyLaunch(id: launchID)
             standbyLaunch = (launchID, now.addingTimeInterval(30))
@@ -209,7 +214,6 @@ final class KeyboardController: UIInputViewController {
     }
 
     private func showLaunchFallback() {
-        suppressAutoStartLaunchID = nil
         guard viewIfLoaded?.window != nil, VoiceHandoff.activeRecording() == nil,
               !(hasFullAccess && VoiceHandoff.standby() != nil),
               startingVoice == nil, voiceTools.isHidden else { return }
@@ -531,8 +535,7 @@ final class KeyboardController: UIInputViewController {
     private func maybeAutoStartArmedVoice(in standby: VoiceHandoff.Standby) {
         guard hasFullAccess, viewIfLoaded?.window != nil,
               let document = currentDocumentID,
-              let armed = VoiceHandoff.pendingArmedStart(for: standby),
-              armed.launchID != suppressAutoStartLaunchID else { return }
+              let armed = VoiceHandoff.pendingArmedStart(for: standby) else { return }
         if let local = VoiceDelivery.armedOrigin(for: armed.launchID) {
             let matchesDocument = local.document == document || local.document == nil
             let recentReturn = Date().timeIntervalSince(armed.readyAt) < 15
@@ -820,7 +823,6 @@ final class KeyboardController: UIInputViewController {
 
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
-        suppressAutoStartLaunchID = nil
         recordingPreview.clear()
         revealedPreview = nil
         contextualRanking?.clear()
