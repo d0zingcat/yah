@@ -2,31 +2,39 @@ import SwiftUI
 import UIKit
 
 private struct KeyboardVoiceLink: View {
-    let ticket: UUID?
     let recovery: UUID?
-    let onRequest: () -> Bool
+    let standbyActive: Bool
+    let onRequest: () -> URL?
     let onRejected: () -> Void
     @Environment(\.openURL) private var openURL
     var body: some View {
         Button {
-            guard onRequest() else { return }
-            let base = recovery.map { URL(string: "local-yah-voice://resume/")!.appendingPathComponent($0.uuidString) }
-                ?? URL(string: "local-yah-voice://start/")!
-            openURL(base.appendingPathComponent(ticket?.uuidString ?? "setup")) { accepted in
+            guard let url = onRequest() else { return }
+            openURL(url) { accepted in
                 if !accepted { onRejected() }
             }
         } label: {
             Group {
-                if recovery != nil { Text("离线重试") }
-                else { Label("语音", systemImage: "mic.fill") }
+                if recovery != nil {
+                    Text("离线重试")
+                } else if standbyActive {
+                    Image(systemName: "mic.fill")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .frame(width: 34, height: 34)
+                        .background(Circle().fill(Color.orange))
+                } else {
+                    Image(systemName: "waveform").font(.title2)
+                }
             }
-                .font(.callout.weight(.medium))
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .contentShape(Rectangle())
+            .font(.callout.weight(.medium))
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .foregroundStyle(Color.accentColor)
+        .foregroundStyle(Color.primary)
         .accessibilityLabel(recovery == nil ? "开始语音输入" : "离线重试上次转写")
+        .accessibilityValue(recovery == nil && standbyActive ? "待机已开启" : "")
         .accessibilityInputLabels(recovery == nil ? ["开始语音输入"] : ["离线重试", "继续上次离线转写", "继续"])
     }
 }
@@ -57,8 +65,10 @@ final class KeyboardController: UIInputViewController {
 
     private let stopVoice = UIButton(type: .system)
     private let recordingPreview = KeyboardRecordingPreview()
+    private let voicePanel = KeyboardVoicePanel()
     private var revealedPreview: (recording: UUID, document: UUID)?
     private var voiceTimer: Timer?
+    private var voiceStateToken: Int32?
     private var waitingForVoice: (recording: UUID, document: UUID)?
     private var startingVoice: (recording: UUID, document: UUID, expires: Date)?
     private var retryingVoice: (recording: UUID, document: UUID?, until: Date)?
@@ -67,10 +77,13 @@ final class KeyboardController: UIInputViewController {
     private var voiceMessage: (text: String, document: UUID?, until: Date)?
     private var singleSource: (document: UUID, since: Date)?
     private var foregroundStart: (id: UUID, expires: Date)?
+    private var standbyLaunch: (id: UUID, expires: Date)?
+    private var suppressAutoStartLaunchID: UUID?
     private var offeredSingle: (document: UUID?, until: Date)?
     private var lastDeliveryLookup: (document: UUID, latest: UUID?)?
     private var resultWaitBegan: Date?
     private let voiceStatus = UILabel()
+    private weak var mainToolbar: UIView?
     private weak var typingHeader: UIView?
     private let insertVoice = UIButton(type: .system)
     private let voiceTools = UIStackView()
@@ -80,91 +93,125 @@ final class KeyboardController: UIInputViewController {
     private lazy var voiceLink = UIHostingController(rootView: makeVoiceLink())
 
     private var recoverableRecording: UUID?
+    private var voiceLinkStandbyActive = false
+
+    deinit {
+        if let token = voiceStateToken { notify_cancel(token) }
+    }
 
     private func makeVoiceLink() -> KeyboardVoiceLink {
-        KeyboardVoiceLink(ticket: VoiceHandoff.keyboardTicket(), recovery: recoverableRecording,
-                          onRequest: { [weak self] in self?.requestVoice() ?? false },
+        KeyboardVoiceLink(recovery: recoverableRecording,
+                          standbyActive: voiceLinkStandbyActive,
+                          onRequest: { [weak self] in self?.requestVoiceURL() },
                           onRejected: { [weak self] in self?.showLaunchFallback() })
     }
 
-    /// True allows the SwiftUI control to ask the system to open the containing app.
-    private func requestVoice() -> Bool {
-        let now = Date()
-        guard VoiceHandoff.activeRecording() == nil else { updateVoiceHandoff(); return false }
-        if let startingVoice, startingVoice.expires > now { return false }
-        if let retryingVoice, retryingVoice.until > now { return false }
-        if recoverableRecording != VoiceHandoff.recovery()?.recording {
-            updateVoiceHandoff()
-            reportVoice("语音状态已更新，请点当前语音按钮。", in: currentDocumentID)
-            return false
-        }
-        voiceMessage = nil
-        let standby = VoiceHandoff.standby()
-        if let recording = recoverableRecording, hasFullAccess, let standby {
-            do {
-                try VoiceHandoff.requestRetry(in: standby, recording: recording)
-                if waitingForVoice?.recording == recording { waitingForVoice = nil; resultWaitBegan = nil }
-                retryingVoice = (recording, currentDocumentID, now.addingTimeInterval(VoiceHandoff.startRequestLifetime))
-                updateVoiceHandoff()
-            } catch { reportVoice("未能请求离线重试，请再点一次。", in: currentDocumentID) }
-            return false
-        }
-        if recoverableRecording == nil, let standby, !hasFullAccess {
-            let document = currentDocumentID
-            if offeredSingle?.until ?? .distantPast <= now || offeredSingle?.document != document {
-                offeredSingle = (document, min(standby.expires, now.addingTimeInterval(16)))
-                reportVoice("请在设置 → 通用 → 键盘 → 键盘 → Yah 允许完全访问。再点语音可单次录音。", in: document)
-                return false
-            }
-            offeredSingle = nil
-        }
-        if recoverableRecording == nil, hasFullAccess, let standby {
-            guard let source = currentDocumentID else {
-                reportVoice("请回到输入框，再点麦克风。", in: nil)
-                return false
-            }
-            if endingStandby?.id == standby.id { return false }
-            do {
-                // The shared command writer returns the same ID while one request is alive.
-                let recording: UUID
-                if let pending = VoiceHandoff.pendingStart(in: standby) {
-                    guard VoiceDelivery.origin(for: pending) == source else {
-                        reportVoice("已有录音启动请求，请稍候。", in: source)
-                        return false
-                    }
-                    recording = pending
-                } else { recording = try VoiceHandoff.requestStart(in: standby) }
-                guard VoiceDelivery.bind(recording, to: source) == source else {
-                    reportVoice("另一输入框正在请求录音。", in: source)
-                    return false
-                }
-                startingVoice = (recording, source, now.addingTimeInterval(VoiceHandoff.startRequestLifetime))
-                waitingForVoice = (recording, source)
-                resultWaitBegan = nil
-                updateVoiceHandoff()
-            } catch {
-                reportVoice("未能请求录音，请再点麦克风。", in: source)
-            }
-            return false
-        }
-        if recoverableRecording == nil, hasFullAccess,
-           foregroundStart.map({ $0.expires <= now }) ?? true,
-           let id = try? VoiceHandoff.rememberForegroundStart() {
-            foregroundStart = (id, now.addingTimeInterval(15))
-        }
-        if recoverableRecording == nil, let document = currentDocumentID { singleSource = (document, now) }
-        else { singleSource = nil }
+    private func scheduleVoiceLaunchCheck() {
         voiceLaunchCheck?.cancel()
         voiceLaunchCheck = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: 1_500_000_000)
             guard !Task.isCancelled else { return }
             self?.showLaunchFallback()
         }
-        return true
+    }
+
+    private func startStandbyDictation(in standby: VoiceHandoff.Standby, document source: UUID, refreshUI: Bool = true) -> Bool {
+        guard endingStandby?.id != standby.id else { return false }
+        let now = Date()
+        do {
+            // The shared command writer returns the same ID while one request is alive.
+            let recording: UUID
+            if let pending = VoiceHandoff.pendingStart(in: standby) {
+                guard VoiceDelivery.origin(for: pending) == source else {
+                    reportVoice("已有录音启动请求，请稍候。", in: source)
+                    return false
+                }
+                recording = pending
+            } else { recording = try VoiceHandoff.requestStart(in: standby) }
+            guard VoiceDelivery.bind(recording, to: source) == source else {
+                reportVoice("另一输入框正在请求录音。", in: source)
+                return false
+            }
+            startingVoice = (recording, source, now.addingTimeInterval(VoiceHandoff.startRequestLifetime))
+            waitingForVoice = (recording, source)
+            resultWaitBegan = nil
+            if refreshUI { updateVoiceHandoff() }
+            return true
+        } catch {
+            reportVoice("未能请求录音，请再点麦克风。", in: source)
+            return false
+        }
+    }
+
+    /// Non-nil URL asks the system to open the containing app.
+    private func requestVoiceURL() -> URL? {
+        let now = Date()
+        guard VoiceHandoff.activeRecording() == nil else { updateVoiceHandoff(); return nil }
+        if let startingVoice, startingVoice.expires > now { return nil }
+        if let retryingVoice, retryingVoice.until > now { return nil }
+        if recoverableRecording != VoiceHandoff.recovery()?.recording {
+            updateVoiceHandoff()
+            reportVoice("语音状态已更新，请点当前语音按钮。", in: currentDocumentID)
+            return nil
+        }
+        voiceMessage = nil
+        let ticket = VoiceHandoff.keyboardTicket()?.uuidString ?? "setup"
+        let standby = VoiceHandoff.standby()
+        if let recording = recoverableRecording {
+            if hasFullAccess, let standby {
+                do {
+                    try VoiceHandoff.requestRetry(in: standby, recording: recording)
+                    if waitingForVoice?.recording == recording { waitingForVoice = nil; resultWaitBegan = nil }
+                    retryingVoice = (recording, currentDocumentID, now.addingTimeInterval(VoiceHandoff.startRequestLifetime))
+                    updateVoiceHandoff()
+                } catch { reportVoice("未能请求离线重试，请再点一次。", in: currentDocumentID) }
+                return nil
+            }
+            scheduleVoiceLaunchCheck()
+            return URL(string: "local-yah-voice://resume/")!
+                .appendingPathComponent(recording.uuidString)
+                .appendingPathComponent(ticket)
+        }
+        if let standby, !hasFullAccess {
+            let document = currentDocumentID
+            if offeredSingle?.until ?? .distantPast <= now || offeredSingle?.document != document {
+                offeredSingle = (document, min(standby.expires, now.addingTimeInterval(16)))
+                reportVoice("请在设置 → 通用 → 键盘 → 键盘 → Yah 允许完全访问。再点语音可单次录音。", in: document)
+                return nil
+            }
+            offeredSingle = nil
+        }
+        if hasFullAccess, let standby {
+            guard let source = currentDocumentID else {
+                reportVoice("请回到输入框，再点麦克风。", in: nil)
+                return nil
+            }
+            _ = startStandbyDictation(in: standby, document: source)
+            return nil
+        }
+        if hasFullAccess {
+            let launchID = UUID()
+            suppressAutoStartLaunchID = launchID
+            VoiceDelivery.saveArmedOrigin(launchID: launchID, document: currentDocumentID)
+            try? VoiceHandoff.rememberStandbyLaunch(id: launchID)
+            standbyLaunch = (launchID, now.addingTimeInterval(30))
+            if let document = currentDocumentID { singleSource = (document, now) }
+            else { singleSource = nil }
+            scheduleVoiceLaunchCheck()
+            return URL(string: "local-yah-voice://standby/")!
+                .appendingPathComponent(launchID.uuidString)
+                .appendingPathComponent(ticket)
+        }
+        if let document = currentDocumentID { singleSource = (document, now) }
+        else { singleSource = nil }
+        scheduleVoiceLaunchCheck()
+        return URL(string: "local-yah-voice://start/")!.appendingPathComponent(ticket)
     }
 
     private func showLaunchFallback() {
+        suppressAutoStartLaunchID = nil
         guard viewIfLoaded?.window != nil, VoiceHandoff.activeRecording() == nil,
+              !(hasFullAccess && VoiceHandoff.standby() != nil),
               startingVoice == nil, voiceTools.isHidden else { return }
         voiceLaunchCheck?.cancel()
         fallbackVoice.sendActions(for: .touchUpInside)
@@ -199,10 +246,16 @@ final class KeyboardController: UIInputViewController {
 
     private let rows = UIStackView()
 
+    private static let background = UIColor { $0.userInterfaceStyle == .dark ? UIColor(white: 0.13, alpha: 1) : .systemGray5 }
+    private static let keyColor = UIColor { $0.userInterfaceStyle == .dark ? UIColor(white: 0.29, alpha: 1) : .white }
+    private static let controlColor = UIColor { $0.userInterfaceStyle == .dark ? UIColor(white: 0.29, alpha: 1) : .systemGray3 }
+    private static let accentKey = UIColor { $0.userInterfaceStyle == .dark ? UIColor(white: 0.96, alpha: 1) : .label }
+    private static let accentInk = UIColor { $0.userInterfaceStyle == .dark ? .black : .white }
+
     private func closeCandidates() {
         guard !candidatePanel.isHidden else { return }
         candidatePanel.dismiss()
-        rows.isHidden = false
+        rows.isHidden = !voicePanel.isHidden
         updateCandidateToggle()
     }
 
@@ -250,7 +303,7 @@ final class KeyboardController: UIInputViewController {
         if let saved = UserDefaults.standard.string(forKey: "scheme"), let choice = Scheme(rawValue: saved),
            composition.useSchema(saved) { scheme = choice }
         composition.setOutputForm(outputForm)
-        view.backgroundColor = .systemGray5
+        view.backgroundColor = Self.background
         let stack = UIStackView()
         stack.axis = .vertical
         stack.translatesAutoresizingMaskIntoConstraints = false
@@ -279,7 +332,7 @@ final class KeyboardController: UIInputViewController {
         // The toolbar is a single opaque keyboard row. System scroll-edge glass can obscure
         // the candidate glyphs on iOS 26 even when the content fits on one line.
         scroll.contentInsetAdjustmentBehavior = .never
-        scroll.backgroundColor = .systemGray5
+        scroll.backgroundColor = Self.background
         scroll.clipsToBounds = true
         if #available(iOS 26.0, *) {
             scroll.topEdgeEffect.isHidden = true
@@ -301,7 +354,7 @@ final class KeyboardController: UIInputViewController {
             header.heightAnchor.constraint(equalToConstant: 52)])
         addChild(voiceLink)
         voiceLink.view.backgroundColor = .clear
-        voiceLink.view.widthAnchor.constraint(equalToConstant: 74).isActive = true
+        voiceLink.view.widthAnchor.constraint(equalToConstant: 48).isActive = true
         let voice = fallbackVoice
         voice.setTitle("打字", for: .normal)
         voice.accessibilityLabel = "返回打字"
@@ -329,6 +382,11 @@ final class KeyboardController: UIInputViewController {
             if voiceTools.isHidden {
                 if let start = foregroundStart { VoiceHandoff.cancelForegroundStart(start.id) }
                 foregroundStart = nil
+                if let launch = standbyLaunch {
+                    VoiceHandoff.cancelStandbyLaunch(launch.id)
+                    VoiceDelivery.clearArmedOrigin(launch.id)
+                }
+                standbyLaunch = nil
                 singleSource = nil
                 return
             }
@@ -337,18 +395,24 @@ final class KeyboardController: UIInputViewController {
                 UIAccessibility.post(notification: .announcement, argument: hint?.text)
                 return
             }
-            hint?.text = foregroundStart.map { $0.expires > Date() } == true
+            let hasPendingLaunch = foregroundStart.map { $0.expires > Date() } == true
+                || standbyLaunch.map { $0.expires > Date() } == true
+            hint?.text = hasPendingLaunch
                 ? "现在打开 Yah 即可录音。" : "正在尝试用通知打开 Yah…"
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 do {
                     let sent = try await VoicePrompt.request()
                     guard !voiceTools.isHidden else { return }
-                    if foregroundStart.map({ $0.expires > Date() }) == true { hint?.text = "现在打开 Yah 即可录音。" }
+                    let activeLaunch = foregroundStart.map { $0.expires > Date() } == true
+                        || standbyLaunch.map { $0.expires > Date() } == true
+                    if activeLaunch { hint?.text = "现在打开 Yah 即可录音。" }
                     else { hint?.text = sent ? "轻点 Yah 通知开始录音" : "请打开 Yah，点「开始跨应用语音输入」，再返回这里。" }
                 } catch {
                     guard !voiceTools.isHidden else { return }
-                    hint?.text = foregroundStart.map { $0.expires > Date() } == true
+                    let activeLaunch = foregroundStart.map { $0.expires > Date() } == true
+                        || standbyLaunch.map { $0.expires > Date() } == true
+                    hint?.text = activeLaunch
                         ? "现在打开 Yah 即可录音。" : "请打开 Yah，点「开始跨应用语音输入」，再返回这里。"
                 }
                 UIAccessibility.post(notification: .announcement, argument: hint?.text)
@@ -389,6 +453,7 @@ final class KeyboardController: UIInputViewController {
             } else { closeCandidates() }
         }, for: .touchUpInside)
         let toolbar = UIStackView(arrangedSubviews: [header, expandCandidates, voiceTools, recordingPreview, stopVoice, insertVoice, voice, voiceLink.view!])
+        mainToolbar = toolbar
         let previewWidth = recordingPreview.widthAnchor.constraint(equalTo: toolbar.widthAnchor, multiplier: 0.40)
         previewWidth.priority = .defaultHigh
         previewWidth.isActive = true
@@ -402,6 +467,12 @@ final class KeyboardController: UIInputViewController {
         voiceStatus.accessibilityIdentifier = "voice-request-status"
         stack.addArrangedSubview(voiceStatus)
         voiceLink.didMove(toParent: self)
+
+        voicePanel.isHidden = true
+        voicePanel.onCancel = { [weak self] in self?.cancelActiveVoice() }
+        voicePanel.onStop = { [weak self] in self?.stopActiveVoice() }
+        voicePanel.onEndStandby = { [weak self] in self?.endStandby() }
+        stack.addArrangedSubview(voicePanel)
 
         rows.axis = .vertical
         rows.distribution = .fillEqually
@@ -442,6 +513,40 @@ final class KeyboardController: UIInputViewController {
         updateVoiceHandoff()
     }
 
+    private func cancelActiveVoice() {
+        if let session = VoiceHandoff.activeRecording(), !session.transcribing {
+            VoiceDelivery.markCancelled(session.id)
+            _ = notify_post(session.cancelSignal)
+        } else if let starting = startingVoice {
+            VoiceDelivery.markCancelled(starting.recording)
+            VoiceHandoff.clearStart(starting.recording)
+        }
+        startingVoice = nil
+        waitingForVoice = nil
+        resultWaitBegan = nil
+        stoppingVoice = nil
+        updateVoiceHandoff()
+    }
+
+    private func maybeAutoStartArmedVoice(in standby: VoiceHandoff.Standby) {
+        guard hasFullAccess, viewIfLoaded?.window != nil,
+              let document = currentDocumentID,
+              let armed = VoiceHandoff.pendingArmedStart(for: standby),
+              armed.launchID != suppressAutoStartLaunchID else { return }
+        if let local = VoiceDelivery.armedOrigin(for: armed.launchID) {
+            let matchesDocument = local.document == document || local.document == nil
+            let recentReturn = Date().timeIntervalSince(armed.readyAt) < 15
+            guard matchesDocument || recentReturn else { return }
+        } else {
+            guard Date().timeIntervalSince(armed.readyAt) < 15 else { return }
+        }
+        guard VoiceHandoff.consumeArmedStart(armed.launchID, in: standby) != nil else { return }
+        VoiceDelivery.clearArmedOrigin(armed.launchID)
+        if standbyLaunch?.id == armed.launchID { standbyLaunch = nil }
+        singleSource = nil
+        _ = startStandbyDictation(in: standby, document: document, refreshUI: false)
+    }
+
     private func updateVoiceHandoff() {
         let now = Date()
         let document = currentDocumentID
@@ -449,12 +554,22 @@ final class KeyboardController: UIInputViewController {
             foregroundStart = nil
             if !voiceTools.isHidden { voiceHint.text = "请打开 Yah，点「开始跨应用语音输入」，再返回这里。" }
         }
+        if let launch = standbyLaunch, launch.expires <= now {
+            VoiceDelivery.clearArmedOrigin(launch.id)
+            standbyLaunch = nil
+        }
         let session = VoiceHandoff.activeRecording()
         let pending = VoiceHandoff.pending()
         let standby = hasFullAccess ? VoiceHandoff.standby() : nil
 
+        let cancelledSession = session.map { VoiceDelivery.wasCancelled($0.id) } ?? false
+        if let session, cancelledSession, !session.transcribing {
+            _ = notify_post(session.cancelSignal)
+        }
+        let visibleSession = cancelledSession ? nil : session
+
         if let retry = retryingVoice {
-            if (session?.id == retry.recording && session?.transcribing == true) || pending?.recordingID == retry.recording {
+            if (visibleSession?.id == retry.recording && visibleSession?.transcribing == true) || pending?.recordingID == retry.recording {
                 retryingVoice = nil
             } else if retry.until <= now {
                 retryingVoice = nil
@@ -462,15 +577,17 @@ final class KeyboardController: UIInputViewController {
                                 retry.document, now.addingTimeInterval(16))
             }
         }
-        if session == nil, retryingVoice == nil, startingVoice == nil, waitingForVoice == nil,
+        if visibleSession == nil, retryingVoice == nil, startingVoice == nil, waitingForVoice == nil,
            let standby, let request = VoiceHandoff.pendingStart(in: standby), let document,
+           !VoiceDelivery.wasCancelled(request),
            VoiceDelivery.origin(for: request) == document, VoiceHandoff.failure(for: request) == nil,
            pending?.recordingID != request {
             startingVoice = (request, document, now.addingTimeInterval(VoiceHandoff.startRequestLifetime))
             waitingForVoice = (request, document)
         }
-        if let session {
+        if let session = visibleSession {
             foregroundStart = nil
+            standbyLaunch = nil
             if let source = singleSource {
                 if now.timeIntervalSince(source.since) < 120, session.started >= source.since.addingTimeInterval(-1) {
                     _ = VoiceDelivery.bind(session.id, to: source.document)
@@ -521,55 +638,128 @@ final class KeyboardController: UIInputViewController {
                 voiceMessage = ("Yah 未确认结束，请在方案菜单重试。", ending.document, now.addingTimeInterval(16))
             }
         }
-        if let stopping = stoppingVoice, stopping.recording != session?.id || stopping.until <= now {
+        if let stopping = stoppingVoice, stopping.recording != visibleSession?.id || stopping.until <= now {
             stoppingVoice = nil
         }
         if let message = voiceMessage, message.until <= now { voiceMessage = nil }
+
+        let initialRecovery = visibleSession == nil ? VoiceHandoff.recovery()?.recording : nil
+        if visibleSession == nil, session == nil, startingVoice == nil, retryingVoice == nil,
+           endingStandby == nil, initialRecovery == nil, let standby {
+            maybeAutoStartArmedVoice(in: standby)
+        }
+
         var status: String?
         if let ending = endingStandby, ending.document == document { status = "正在请求结束连续听写…" }
         else if let retry = retryingVoice, retry.document == document { status = "正在请求离线重试…" }
         else if let starting = startingVoice, starting.document == document { status = "正在请求 Yah 开始录音…" }
         else if let message = voiceMessage, message.document == nil || message.document == document { status = message.text }
-        else if session == nil, resultWaitBegan != nil, waitingForVoice?.document == document { status = "正在等待转写结果…" }
-        voiceStatus.text = status
-        voiceStatus.isHidden = status == nil
+        else if visibleSession == nil, resultWaitBegan != nil, waitingForVoice?.document == document { status = "正在等待转写结果…" }
 
-        let recovery = session == nil ? VoiceHandoff.recovery()?.recording : nil
-        if recoverableRecording != recovery {
+        let recovery = visibleSession == nil ? VoiceHandoff.recovery()?.recording : nil
+        let standbyBadge = standby != nil
+        if recoverableRecording != recovery || voiceLinkStandbyActive != standbyBadge {
             recoverableRecording = recovery
+            voiceLinkStandbyActive = standbyBadge
             voiceLink.rootView = makeVoiceLink()
         }
-        voiceLink.view.isHidden = session != nil || !voiceTools.isHidden
+        voiceLink.view.isHidden = visibleSession != nil || !voiceTools.isHidden
         voiceLink.view.isUserInteractionEnabled = startingVoice == nil && retryingVoice == nil && endingStandby == nil
-        stopVoice.isHidden = session == nil
-        if revealedPreview?.recording != session?.id || revealedPreview?.document != document { revealedPreview = nil }
-        if let session {
-            let stopping = stoppingVoice?.recording == session.id
-            let capturing = !session.transcribing && !stopping
-            stopVoice.setTitle(session.transcribing ? " 转写中" : stopping ? " 停止中" : " 停止", for: .normal)
-            stopVoice.isEnabled = capturing
-            stopVoice.accessibilityLabel = session.transcribing ? "正在转写" : stopping ? "正在停止" : "停止录音并输入"
-            if capturing {
-                let snapshot = session.currentPreview
-                let origin = waitingForVoice?.recording == session.id ? waitingForVoice?.document : nil
-                let visible = document != nil && (origin == document || (origin == nil && revealedPreview?.recording == session.id))
-                let canReveal = origin == nil && document != nil && !visible && snapshot?.text.isEmpty == false
-                recordingPreview.show(text: visible ? snapshot?.text : nil, levels: snapshot?.levels ?? [],
-                                      seconds: max(0, Int(now.timeIntervalSince(session.started))), canReveal: canReveal)
+
+        let ownsStarting = startingVoice?.document == document
+        let ownsSession = visibleSession.map { VoiceDelivery.origin(for: $0.id) == document } ?? false
+        let ownsWaiting = visibleSession == nil && resultWaitBegan != nil && waitingForVoice?.document == document
+        let showVoicePanel = voiceTools.isHidden && document != nil && (ownsStarting || ownsSession || ownsWaiting)
+
+        voiceStatus.text = status
+        voiceStatus.isHidden = status == nil || showVoicePanel
+
+        if revealedPreview?.recording != visibleSession?.id || revealedPreview?.document != document { revealedPreview = nil }
+
+        if showVoicePanel {
+            closeCandidates()
+            mainToolbar?.isHidden = true
+            rows.isHidden = true
+            voicePanel.isHidden = false
+            stopVoice.isHidden = true
+            recordingPreview.clear()
+            if let s = visibleSession {
+                let stopping = stoppingVoice?.recording == s.id
+                let capturing = !s.transcribing && !stopping
+                let seconds = max(0, Int(now.timeIntervalSince(s.started)))
+                let title = s.transcribing ? "正在识别并上屏…"
+                    : stopping ? "正在停止…"
+                    : String(format: "正在聆听 %d:%02d", seconds / 60, seconds % 60)
+                let snapshot = capturing ? s.currentPreview : nil
+                voicePanel.render(
+                    title: title,
+                    draft: snapshot?.text,
+                    levels: snapshot?.levels ?? [],
+                    isStarting: false,
+                    isStopping: !capturing,
+                    canCancel: capturing,
+                    canStop: capturing,
+                    standbyExpires: standby?.expires,
+                    endingStandby: endingStandby != nil
+                )
+            } else if startingVoice != nil {
+                voicePanel.render(
+                    title: "正在准备麦克风…",
+                    draft: nil,
+                    levels: [],
+                    isStarting: true,
+                    isStopping: false,
+                    canCancel: true,
+                    canStop: false,
+                    standbyExpires: standby?.expires,
+                    endingStandby: endingStandby != nil
+                )
+            } else {
+                voicePanel.render(
+                    title: "正在识别并上屏…",
+                    draft: nil,
+                    levels: [],
+                    isStarting: false,
+                    isStopping: true,
+                    canCancel: false,
+                    canStop: false,
+                    standbyExpires: standby?.expires,
+                    endingStandby: endingStandby != nil
+                )
+            }
+        } else {
+            voicePanel.isHidden = true
+            mainToolbar?.isHidden = false
+            rows.isHidden = !candidatePanel.isHidden
+            stopVoice.isHidden = visibleSession == nil
+            if let s = visibleSession {
+                let stopping = stoppingVoice?.recording == s.id
+                let capturing = !s.transcribing && !stopping
+                stopVoice.setTitle(s.transcribing ? " 转写中" : stopping ? " 停止中" : " 停止", for: .normal)
+                stopVoice.isEnabled = capturing
+                stopVoice.accessibilityLabel = s.transcribing ? "正在转写" : stopping ? "正在停止" : "停止录音并输入"
+                if capturing {
+                    let snapshot = s.currentPreview
+                    let origin = waitingForVoice?.recording == s.id ? waitingForVoice?.document : nil
+                    let visible = document != nil && (origin == document || (origin == nil && revealedPreview?.recording == s.id))
+                    let canReveal = origin == nil && document != nil && !visible && snapshot?.text.isEmpty == false
+                    recordingPreview.show(text: visible ? snapshot?.text : nil, levels: snapshot?.levels ?? [],
+                                          seconds: max(0, Int(now.timeIntervalSince(s.started))), canReveal: canReveal)
+                } else { recordingPreview.clear() }
             } else { recordingPreview.clear() }
-        } else { recordingPreview.clear() }
+        }
 
         // A newer result from another field can replace the shared latest pointer.
         // Scan the extension's opaque origin IDs only on a field or result change.
         if let document, viewIfLoaded?.window != nil,
            lastDeliveryLookup?.document != document || lastDeliveryLookup?.latest != pending?.id {
             lastDeliveryLookup = (document, pending?.id)
-            for recording in VoiceDelivery.recordings(in: document) where recording != session?.id {
+            for recording in VoiceDelivery.recordings(in: document) where recording != visibleSession?.id {
                 guard let saved = VoiceHandoff.pending(for: recording), !VoiceDelivery.wasInserted(saved.id) else { continue }
                 insertPendingVoice(saved)
             }
         }
-        guard let item = pending, session?.id != item.recordingID || session == nil,
+        guard let item = pending, visibleSession?.id != item.recordingID || visibleSession == nil,
               !VoiceDelivery.wasInserted(item.id) else { insertVoice.isHidden = true; return }
         let origin = item.recordingID.flatMap(VoiceDelivery.origin)
         if let origin, origin == document, viewIfLoaded?.window != nil {
@@ -587,14 +777,23 @@ final class KeyboardController: UIInputViewController {
         finishComposition()
         textDocumentProxy.insertText(item.text)
         insertVoice.isHidden = true
+        playKeyFeedback()
         refresh()
+        updateVoiceHandoff()
     }
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
         lastDeliveryLookup = nil
+        if let token = voiceStateToken { notify_cancel(token); voiceStateToken = nil }
+        var stateToken: Int32 = 0
+        if notify_register_dispatch(VoiceHandoff.stateNotification, &stateToken, .main, { [weak self] _ in
+            self?.updateVoiceHandoff()
+        }) == NOTIFY_STATUS_OK {
+            voiceStateToken = stateToken
+        }
         voiceTimer?.invalidate()
-        voiceTimer = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: true) { [weak self] _ in
+        voiceTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.updateVoiceHandoff() }
         }
         voiceLink.rootView = makeVoiceLink()
@@ -614,8 +813,14 @@ final class KeyboardController: UIInputViewController {
         updateField()
     }
 
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        updateVoiceHandoff()
+    }
+
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
+        suppressAutoStartLaunchID = nil
         recordingPreview.clear()
         revealedPreview = nil
         contextualRanking?.clear()
@@ -625,6 +830,7 @@ final class KeyboardController: UIInputViewController {
         voiceLaunchCheck = nil
         voiceTimer?.invalidate()
         voiceTimer = nil
+        if let token = voiceStateToken { notify_cancel(token); voiceStateToken = nil }
     }
 
     override func textDidChange(_ textInput: UITextInput?) {
@@ -772,30 +978,41 @@ final class KeyboardController: UIInputViewController {
         if nineKeys { lines = ["123", "456", "789"] }
         for (index, line) in lines.enumerated() {
             let row = UIStackView()
-            row.distribution = .fillEqually
+            let keysRow = UIStackView()
+            keysRow.distribution = .fillEqually
+            keysRow.setContentHuggingPriority(UILayoutPriority(1), for: .horizontal)
             let last = index == lines.count - 1
+            var leading: UIView?
+            var trailing: UIView?
             if last && !symbols && !nineKeys {
-                row.addArrangedSubview(button(shifted ? "⬆" : "⇧", style: .control) {
+                let shift = button("⇧", style: .control) {
                     $0.shifted.toggle()
                     $0.rebuild()
-                })
+                }
+                shift.configuration?.title = nil
+                shift.configuration?.image = UIImage(systemName: shifted ? "shift.fill" : "shift")
+                shift.accessibilityLabel = "Shift"
+                shift.accessibilityTraits = shifted ? [.button, .selected] : .button
+                leading = shift
+            } else if line == "asdfghjkl" && !symbols && !nineKeys && layout == .compact {
+                leading = UIView()
             }
             for key in line {
                 if nineKeys, let digit = key.wholeNumberValue {
                     if digit == 1 {
-                        row.addArrangedSubview(button("分词", style: .control) {
+                        keysRow.addArrangedSubview(button("分词", style: .control) {
                             if !$0.composition.spelling.isEmpty { $0.composition.append("'") }
                         })
                     } else {
                         let code = Character(UnicodeScalar(65 + digit - 2)!)
-                        row.addArrangedSubview(letterButton(title: groups[digit - 2], code: code))
+                        keysRow.addArrangedSubview(letterButton(title: groups[digit - 2], code: code))
                     }
                     continue
                 }
                 if communityID == nil && !english && !shifted && !symbols && key.isLetter {
                     let cap = letterButton(title: String(key), code: key)
                     addFlickSymbol(to: cap, letter: key)
-                    row.addArrangedSubview(cap)
+                    keysRow.addArrangedSubview(cap)
                     continue
                 }
                 let value = shifted ? String(key).uppercased() : String(key)
@@ -813,15 +1030,25 @@ final class KeyboardController: UIInputViewController {
                     if keyboard.shifted { keyboard.shifted = false; keyboard.rebuild() }
                 }
                 if !symbols { addFlickSymbol(to: cap, letter: key) }
-                row.addArrangedSubview(cap)
+                keysRow.addArrangedSubview(cap)
             }
             if last && !nineKeys {
                 let delete = button("⌫", style: .control) { keyboard in
                     if keyboard.composition.spelling.isEmpty { keyboard.textDocumentProxy.deleteBackward() }
                     else { keyboard.composition.backspace() }
                 }
+                delete.configuration?.title = nil
+                delete.configuration?.image = UIImage(systemName: "delete.left")
                 delete.accessibilityLabel = "退格"
-                row.addArrangedSubview(delete)
+                trailing = delete
+            }
+            if let leading, !(leading is UIButton) { trailing = UIView() }
+            if let leading { row.addArrangedSubview(leading) }
+            row.addArrangedSubview(keysRow)
+            if let trailing { row.addArrangedSubview(trailing) }
+            for edge in [leading, trailing] {
+                guard let edge else { continue }
+                edge.widthAnchor.constraint(equalTo: row.widthAnchor, multiplier: edge is UIButton ? 0.14 : 0.05).isActive = true
             }
             rows.addArrangedSubview(wideNine ? wideNineRow(index, letters: row) : row)
         }
@@ -839,24 +1066,19 @@ final class KeyboardController: UIInputViewController {
                 globe.widthAnchor.constraint(equalTo: controls.widthAnchor, multiplier: 0.16).isActive = true
             }
         }
-        controls.addArrangedSubview(button(symbols ? "ABC" : "123", style: .control) {
+        let numbers = button(symbols ? "ABC" : "123", style: .control) {
             if !$0.isEnteringCode { $0.finishComposition() }
             $0.symbols.toggle()
             $0.shifted = false
             $0.rebuild()
-        })
-        controls.addArrangedSubview(button(english ? "中" : "英", style: .control) {
-            $0.finishComposition()
-            $0.english.toggle()
-            $0.symbols = false
-            $0.shifted = false
-            $0.rebuild()
-        })
+        }
+        controls.addArrangedSubview(numbers)
         let punctuation = field == .emailAddress ? "@" : (field == .URL ? "/" : (english ? "," : "，"))
-        controls.addArrangedSubview(button(punctuation, style: .control) {
+        let comma = button(punctuation, style: .control) {
             $0.finishComposition()
             $0.textDocumentProxy.insertText(punctuation)
-        })
+        }
+        controls.addArrangedSubview(comma)
         if nineKeys {
             controls.addArrangedSubview(button("⌫", style: .control) {
                 if $0.composition.spelling.isEmpty { $0.textDocumentProxy.deleteBackward() }
@@ -868,15 +1090,29 @@ final class KeyboardController: UIInputViewController {
             controls.addArrangedSubview(navigation)
             navigation.widthAnchor.constraint(equalToConstant: 150).isActive = true
         }
-        let space = button(english ? "space" : "空格", style: .space) { $0.insert(defaultText: " ") }
+        let space = button("", style: .space) { $0.insert(defaultText: " ") }
+        space.accessibilityLabel = english ? "space" : "空格"
         let drag = UILongPressGestureRecognizer(target: self, action: #selector(moveCursor(_:)))
         drag.delegate = self
         space.addGestureRecognizer(drag)
         controls.addArrangedSubview(space)
+        let language = button(english ? "中" : "英", style: .control) {
+            $0.finishComposition()
+            $0.english.toggle()
+            $0.symbols = false
+            $0.shifted = false
+            $0.rebuild()
+        }
+        controls.addArrangedSubview(language)
         let enter = button("回车", style: .accent) { $0.insert(defaultText: "\n") }
         enterKey = enter
         controls.addArrangedSubview(enter)
-        enter.widthAnchor.constraint(equalTo: controls.widthAnchor, multiplier: layout == .compact ? 0.24 : 0.16).isActive = true
+        enter.widthAnchor.constraint(equalTo: controls.widthAnchor, multiplier: layout == .compact ? 0.20 : 0.16).isActive = true
+        if layout == .compact {
+            for (cap, width) in [(numbers, 0.16), (comma, 0.10), (language, 0.12)] {
+                cap.widthAnchor.constraint(equalTo: controls.widthAnchor, multiplier: width).isActive = true
+            }
+        }
         if layout != .compact {
             // Give the remaining width to Space, including its cursor-drag surface.
             for case let cap as UIButton in controls.arrangedSubviews where cap !== enter && cap !== space {
@@ -1062,7 +1298,7 @@ final class KeyboardController: UIInputViewController {
     private func styledButton(_ title: String, style: KeyStyle, key: UIButton = UIButton(type: .custom)) -> UIButton {
         var config = UIButton.Configuration.plain()
         config.title = title
-        config.baseForegroundColor = style == .accent ? .white : .label
+        config.baseForegroundColor = style == .accent ? Self.accentInk : .label
         config.contentInsets = NSDirectionalEdgeInsets(top: 0, leading: 1, bottom: 0, trailing: 1)
         let font = keyFont(style)
         config.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attributes in
@@ -1071,13 +1307,13 @@ final class KeyboardController: UIInputViewController {
             return result
         }
         // Only inset the painted cap. The button occupies the entire cell.
-        config.background.cornerRadius = 6
+        config.background.cornerRadius = 10
         config.background.backgroundInsets = NSDirectionalEdgeInsets(top: 3, leading: 2, bottom: 3, trailing: 2)
         let color: UIColor
         switch style {
-        case .letter, .space: color = .systemBackground
-        case .control: color = .systemGray3
-        case .accent: color = .systemIndigo
+        case .letter, .space: color = Self.keyColor
+        case .control: color = Self.controlColor
+        case .accent: color = Self.accentKey
         case .candidate:
             color = .clear
             config.contentInsets = NSDirectionalEdgeInsets(top: 0, leading: 9, bottom: 0, trailing: 9)
@@ -1110,10 +1346,8 @@ final class KeyboardController: UIInputViewController {
         return key
     }
 
-    private func phraseButton() -> UIButton {
-        let key = styledButton("短语", style: .candidate)
-        key.accessibilityLabel = "快捷短语"
-        key.menu = UIMenu(children: [UIDeferredMenuElement.uncached { [weak self] complete in
+    private func phraseMenu() -> UIMenu {
+        UIMenu(title: "快捷短语", image: UIImage(systemName: "text.quote"), children: [UIDeferredMenuElement.uncached { [weak self] complete in
             guard let self else { complete([]); return }
             let saved = phrases.entries
             let save = UIAction(title: "收藏选中文字", image: UIImage(systemName: "plus")) { [weak self] _ in
@@ -1138,8 +1372,6 @@ final class KeyboardController: UIInputViewController {
             }
             complete(actions)
         }])
-        key.showsMenuAsPrimaryAction = true
-        return key
     }
 
     private func correctionButtons(excluding native: [String]) -> [UIButton] {
@@ -1313,13 +1545,15 @@ final class KeyboardController: UIInputViewController {
                 }
                 complete(items)
             }
-            mode.menu = UIMenu(children: [voiceActions] + actions + [convert, appearanceMenu(), contextual, tools])
+            let more = UIMenu(title: "更多", image: UIImage(systemName: "ellipsis.circle"),
+                              children: [phraseMenu(), appearanceMenu(), contextual])
+            mode.menu = UIMenu(children: [voiceActions] + actions + [convert, more, tools])
             mode.showsMenuAsPrimaryAction = true
+            mode.configuration?.image = UIImage(systemName: "chevron.down")
+            mode.configuration?.imagePlacement = .trailing
+            mode.configuration?.imagePadding = 4
+            mode.configuration?.preferredSymbolConfigurationForImage = .init(pointSize: 11, weight: .semibold)
             suggestions.addArrangedSubview(mode)
-            suggestions.addArrangedSubview(phraseButton())
-            for mark in (english ? [".", "?", "!", "-", "_"] : ["。", "？", "！", "、", "……"]) {
-                suggestions.addArrangedSubview(button(mark) { $0.textDocumentProxy.insertText(mark) })
-            }
         }
         if composition.canPage(backward: true) {
             let previous = button("‹") { $0.composition.page(backward: true) }
@@ -1411,6 +1645,9 @@ private final class KeyboardRecordingPreview: UIControl {
 private final class KeyboardLevelMeter: UIView {
     private var levels: [Float] = []
     private var reduceMotion = false
+    var barColor: UIColor = .label
+    var minimumBarHeight: CGFloat = 2
+    var showIdleBars = false
     var levelDescription: String {
         guard let level = levels.last else { return "尚无音量数据" }
         if level < 0.05 { return "安静" }
@@ -1435,22 +1672,208 @@ private final class KeyboardLevelMeter: UIView {
 
     override func draw(_ rect: CGRect) {
         let mid = bounds.midY
-        UIColor.tertiaryLabel.setFill()
-        UIBezierPath(roundedRect: CGRect(x: 0, y: mid - 0.5, width: bounds.width, height: 1), cornerRadius: 0.5).fill()
-        guard !levels.isEmpty else { return }
-        UIColor.label.setFill()
+        if levels.isEmpty {
+            if showIdleBars {
+                barColor.withAlphaComponent(0.28).setFill()
+                let count = 16
+                let slot = bounds.width / CGFloat(count)
+                let width = min(4.5, max(1.5, slot - 3))
+                for index in 0..<count {
+                    let h = minimumBarHeight
+                    let x = (CGFloat(index) + 0.5) * slot - width / 2
+                    UIBezierPath(roundedRect: CGRect(x: x, y: mid - h / 2, width: width, height: h), cornerRadius: width / 2).fill()
+                }
+            } else {
+                UIColor.tertiaryLabel.setFill()
+                UIBezierPath(roundedRect: CGRect(x: 0, y: mid - 0.5, width: bounds.width, height: 1), cornerRadius: 0.5).fill()
+            }
+            return
+        }
+        barColor.setFill()
         if reduceMotion {
             let band = (CGFloat(levels.last ?? 0) * 4).rounded() / 4
             UIBezierPath(roundedRect: CGRect(x: 0, y: mid - 2, width: bounds.width * band, height: 4), cornerRadius: 2).fill()
         } else {
             let slot = bounds.width / 16
             for (index, level) in levels.suffix(16).reversed().enumerated() {
-                let height = max(2, CGFloat(level) * bounds.height)
-                let width = min(3.5, max(1, slot - 1))
+                let height = max(minimumBarHeight, CGFloat(level) * bounds.height)
+                let width = min(4.5, max(1, slot - 1.5))
                 let x = bounds.maxX - (CGFloat(index) + 0.5) * slot - width / 2
                 UIBezierPath(roundedRect: CGRect(x: x, y: mid - height / 2, width: width, height: height), cornerRadius: width / 2).fill()
             }
         }
+    }
+}
+
+private final class KeyboardVoicePanel: UIView {
+    var onCancel: (() -> Void)?
+    var onStop: (() -> Void)?
+    var onEndStandby: (() -> Void)?
+
+    private let dotView = UIView()
+    private let statusLabel = UILabel()
+    private let standbyLabel = UILabel()
+    private let endStandbyButton = UIButton(type: .system)
+    private let draftLabel = UILabel()
+    private let meter = KeyboardLevelMeter()
+    private let cancelButton = UIButton(type: .system)
+    private let stopButton = UIButton(type: .system)
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        let card = UIView()
+        card.backgroundColor = UIColor { $0.userInterfaceStyle == .dark ? UIColor(white: 0.20, alpha: 1) : .white }
+        card.layer.cornerRadius = 14
+        card.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(card)
+
+        dotView.layer.cornerRadius = 4
+        dotView.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            dotView.widthAnchor.constraint(equalToConstant: 8),
+            dotView.heightAnchor.constraint(equalToConstant: 8)
+        ])
+
+        statusLabel.font = .preferredFont(forTextStyle: .subheadline).withWeight(.semibold)
+        statusLabel.adjustsFontForContentSizeCategory = true
+        statusLabel.textColor = .label
+        statusLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
+
+        standbyLabel.font = .monospacedDigitSystemFont(ofSize: UIFont.preferredFont(forTextStyle: .caption1).pointSize, weight: .medium)
+        standbyLabel.textColor = .secondaryLabel
+
+        endStandbyButton.setTitle("结束待机", for: .normal)
+        endStandbyButton.titleLabel?.font = .preferredFont(forTextStyle: .caption1)
+        endStandbyButton.accessibilityLabel = "结束连续听写"
+        endStandbyButton.accessibilityIdentifier = "voice-panel-end-standby"
+        endStandbyButton.addAction(UIAction { [weak self] _ in self?.onEndStandby?() }, for: .touchUpInside)
+
+        let spacer = UIView()
+        let header = UIStackView(arrangedSubviews: [dotView, statusLabel, spacer, standbyLabel, endStandbyButton])
+        header.spacing = 6
+        header.alignment = .center
+
+        draftLabel.font = .preferredFont(forTextStyle: .body)
+        draftLabel.adjustsFontForContentSizeCategory = true
+        draftLabel.numberOfLines = 3
+        draftLabel.lineBreakMode = .byTruncatingHead
+        draftLabel.textAlignment = .center
+
+        meter.barColor = .systemOrange
+        meter.minimumBarHeight = 4
+        meter.showIdleBars = true
+        meter.translatesAutoresizingMaskIntoConstraints = false
+        meter.heightAnchor.constraint(equalToConstant: 32).isActive = true
+
+        let body = UIStackView(arrangedSubviews: [draftLabel, meter])
+        body.axis = .vertical
+        body.spacing = 10
+        body.alignment = .fill
+
+        var cancelConfig = UIButton.Configuration.filled()
+        cancelConfig.title = "取消"
+        cancelConfig.image = UIImage(systemName: "xmark")
+        cancelConfig.imagePadding = 5
+        cancelConfig.cornerStyle = .capsule
+        cancelConfig.baseBackgroundColor = UIColor { $0.userInterfaceStyle == .dark ? UIColor(white: 0.30, alpha: 1) : .systemGray5 }
+        cancelConfig.baseForegroundColor = .label
+        cancelButton.configuration = cancelConfig
+        cancelButton.accessibilityLabel = "取消录音"
+        cancelButton.accessibilityIdentifier = "voice-panel-cancel"
+        cancelButton.addAction(UIAction { [weak self] _ in self?.onCancel?() }, for: .touchUpInside)
+
+        var stopConfig = UIButton.Configuration.filled()
+        stopConfig.title = "完成上屏"
+        stopConfig.image = UIImage(systemName: "stop.fill")
+        stopConfig.imagePadding = 6
+        stopConfig.cornerStyle = .capsule
+        stopConfig.baseBackgroundColor = .systemOrange
+        stopConfig.baseForegroundColor = .white
+        stopButton.configuration = stopConfig
+        stopButton.accessibilityLabel = "停止录音并输入"
+        stopButton.accessibilityIdentifier = "voice-panel-stop"
+        stopButton.addAction(UIAction { [weak self] _ in self?.onStop?() }, for: .touchUpInside)
+
+        let actions = UIStackView(arrangedSubviews: [cancelButton, stopButton])
+        actions.spacing = 10
+        actions.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            actions.heightAnchor.constraint(equalToConstant: 44),
+            stopButton.widthAnchor.constraint(equalTo: cancelButton.widthAnchor, multiplier: 1.7)
+        ])
+
+        let topSpacer = UIView()
+        let bottomSpacer = UIView()
+        topSpacer.setContentHuggingPriority(UILayoutPriority(1), for: .vertical)
+        bottomSpacer.setContentHuggingPriority(UILayoutPriority(1), for: .vertical)
+
+        let content = UIStackView(arrangedSubviews: [header, topSpacer, body, bottomSpacer, actions])
+        content.axis = .vertical
+        content.spacing = 8
+        content.translatesAutoresizingMaskIntoConstraints = false
+        card.addSubview(content)
+
+        NSLayoutConstraint.activate([
+            topSpacer.heightAnchor.constraint(equalTo: bottomSpacer.heightAnchor),
+            card.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 6),
+            card.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -6),
+            card.topAnchor.constraint(equalTo: topAnchor, constant: 6),
+            card.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -6),
+            content.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 14),
+            content.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -14),
+            content.topAnchor.constraint(equalTo: card.topAnchor, constant: 12),
+            content.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -12)
+        ])
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    func render(title: String, draft: String?, levels: [Float],
+                isStarting: Bool, isStopping: Bool, canCancel: Bool, canStop: Bool,
+                standbyExpires: Date?, endingStandby: Bool) {
+        statusLabel.text = title
+        dotView.backgroundColor = isStopping ? .systemGray : (isStarting ? .systemOrange : .systemRed)
+
+        let trimmed = draft?.replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !trimmed.isEmpty {
+            draftLabel.text = trimmed
+            draftLabel.textColor = .label
+        } else if isStarting {
+            draftLabel.text = "正在准备麦克风，请稍候…"
+            draftLabel.textColor = .secondaryLabel
+        } else if isStopping {
+            draftLabel.text = "正在识别语音并自动上屏…"
+            draftLabel.textColor = .secondaryLabel
+        } else {
+            draftLabel.text = "请说话，说完点下方完成上屏"
+            draftLabel.textColor = .secondaryLabel
+        }
+
+        meter.show(levels, reduceMotion: UIAccessibility.isReduceMotionEnabled)
+
+        if let standbyExpires {
+            let remaining = max(0, Int(ceil(standbyExpires.timeIntervalSinceNow)))
+            standbyLabel.text = String(format: "待机 %d:%02d", remaining / 60, remaining % 60)
+            standbyLabel.isHidden = false
+            endStandbyButton.isHidden = false
+            endStandbyButton.isEnabled = !endingStandby
+        } else {
+            standbyLabel.isHidden = true
+            endStandbyButton.isHidden = true
+        }
+
+        cancelButton.isEnabled = canCancel
+        stopButton.isEnabled = canStop
+        stopButton.configuration?.title = isStopping ? "正在转写…" : "完成上屏"
+        stopButton.configuration?.image = isStopping ? nil : UIImage(systemName: "stop.fill")
+        stopButton.configuration?.baseBackgroundColor = isStopping ? .systemGray : .systemOrange
+    }
+}
+
+private extension UIFont {
+    func withWeight(_ weight: UIFont.Weight) -> UIFont {
+        let descriptor = fontDescriptor.addingAttributes([.traits: [UIFontDescriptor.TraitKey.weight: weight]])
+        return UIFont(descriptor: descriptor, size: pointSize)
     }
 }
 
@@ -1544,6 +1967,48 @@ private enum VoiceDelivery {
                 try? FileManager.default.removeItem(at: url)
             }
         }
+    }
+
+    struct ArmedOrigin: Codable {
+        let launchID: UUID
+        let document: UUID?
+        let issued: Date
+        let expires: Date
+    }
+
+    static func saveArmedOrigin(launchID: UUID, document: UUID?, lifetime: TimeInterval = 90) {
+        guard let url = directory?.appendingPathComponent("armed-origin.json") else { return }
+        try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let now = Date()
+        let origin = ArmedOrigin(launchID: launchID, document: document, issued: now, expires: now.addingTimeInterval(lifetime))
+        if let data = try? JSONEncoder().encode(origin) {
+            try? data.write(to: url, options: .atomic)
+        }
+    }
+
+    static func armedOrigin(for launchID: UUID) -> ArmedOrigin? {
+        guard let url = directory?.appendingPathComponent("armed-origin.json"),
+              let data = try? Data(contentsOf: url),
+              let origin = try? JSONDecoder().decode(ArmedOrigin.self, from: data),
+              origin.launchID == launchID, origin.expires > Date() else { return nil }
+        return origin
+    }
+
+    static func clearArmedOrigin(_ launchID: UUID) {
+        guard let url = directory?.appendingPathComponent("armed-origin.json"),
+              let data = try? Data(contentsOf: url),
+              let origin = try? JSONDecoder().decode(ArmedOrigin.self, from: data),
+              origin.launchID == launchID else { return }
+        try? FileManager.default.removeItem(at: url)
+    }
+
+    static func markCancelled(_ recording: UUID) {
+        guard let url = file("cancelled-", recording) else { return }
+        try? Data().write(to: url, options: .atomic)
+    }
+
+    static func wasCancelled(_ recording: UUID) -> Bool {
+        file("cancelled-", recording).map { FileManager.default.fileExists(atPath: $0.path) } ?? false
     }
 }
 

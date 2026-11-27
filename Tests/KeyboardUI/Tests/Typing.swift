@@ -19,7 +19,7 @@ final class Typing: KeyboardUITest {
     }
 
     func testUnicodeWithoutLosingComposition() {
-        host.buttons["⇧"].tap()
+        host.buttons["Shift"].tap()
         host.buttons["U"].tap()
         host.buttons["123"].tap()
         host.buttons["6"].tap()

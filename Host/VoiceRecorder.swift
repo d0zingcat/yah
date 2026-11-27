@@ -1,6 +1,7 @@
 import AVFAudio
 import Darwin
 import Foundation
+import YahOfflineSpeech
 
 enum VoiceRecorderError: LocalizedError {
     case permissionDenied
@@ -90,13 +91,22 @@ private final class StandbyCapture: @unchecked Sendable {
 
     private let lock = NSLock()
     private let input: AVAudioFormat
-    private let limit: TimeInterval
+    private var limit: TimeInterval
     private var notifiedExpiry = false
     private var current: Segment?
 
     init(input: AVAudioFormat, duration: TimeInterval) {
         self.input = input
         self.limit = ProcessInfo.processInfo.systemUptime + duration
+    }
+
+    func extend(by duration: TimeInterval) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        let now = ProcessInfo.processInfo.systemUptime
+        guard !notifiedExpiry, now < limit else { return false }
+        limit = now + duration
+        return true
     }
 
     func begin(url: URL, settings: [String: Any], maximum: TimeInterval) throws -> UUID {
@@ -168,9 +178,11 @@ final class VoiceRecorder: NSObject {
     static let maximumDuration: TimeInterval = 5 * 60
 
     var didFinish: ((Result<URL, Error>) -> Void)?
+    var didCancelFromKeyboard: (() -> Void)?
 
     private var keyboardSession: VoiceHandoff.Recording?
     private var stopToken: Int32?
+    private var cancelToken: Int32?
     private var heartbeat: Timer?
 
     func connectKeyboard(id: UUID = UUID()) throws {
@@ -184,7 +196,17 @@ final class VoiceRecorder: NSObject {
             guard let self, self.keyboardSession?.id == session.id else { return }
             self.stop()
         }) == NOTIFY_STATUS_OK else { throw VoiceRecorderError.recordingUnavailable }
+        var cToken: Int32 = 0
+        guard notify_register_dispatch(session.cancelSignal, &cToken, .main, { [weak self] _ in
+            guard let self, self.keyboardSession?.id == session.id else { return }
+            if let handler = self.didCancelFromKeyboard { handler() }
+            else { self.cancel() }
+        }) == NOTIFY_STATUS_OK else {
+            notify_cancel(token)
+            throw VoiceRecorderError.recordingUnavailable
+        }
         stopToken = token
+        cancelToken = cToken
         keyboardSession = session
         do { try VoiceHandoff.publishRecording(session) }
         catch { disconnectKeyboard(); throw error }
@@ -207,6 +229,8 @@ final class VoiceRecorder: NSObject {
     func disconnectKeyboard() {
         if let token = stopToken { notify_cancel(token) }
         stopToken = nil
+        if let token = cancelToken { notify_cancel(token) }
+        cancelToken = nil
         heartbeat?.invalidate()
         heartbeat = nil
         if let session = keyboardSession { VoiceHandoff.endRecording(session.id) }
@@ -214,6 +238,71 @@ final class VoiceRecorder: NSObject {
     }
 
     private var recorder: AVAudioRecorder?
+
+    private var previewConfiguration: (offline: Bool, handler: (String, [Float]) -> Void)?
+    private var levelTask: Task<Void, Never>?
+    private var draftTask: Task<Void, Never>?
+    private var previewDraft = ""
+    private var previewLevels: [Float] = []
+    private var previewID = UUID()
+
+    /// Live level bars and, when `offline` is set, a rolling draft decoded from the unfinished WAV.
+    func configurePreview(offline: Bool, handler: @escaping (String, [Float]) -> Void) {
+        previewConfiguration = (offline, handler)
+    }
+
+    private func pushPreview() {
+        guard let configuration = previewConfiguration else { return }
+        configuration.handler(previewDraft, previewLevels)
+        if var session = keyboardSession {
+            session.updatePreview(text: previewDraft, levels: previewLevels)
+            keyboardSession = session
+            try? VoiceHandoff.publishRecording(session)
+        }
+    }
+
+    private func startPreview(url: URL) {
+        stopPreview()
+        guard let configuration = previewConfiguration else { return }
+        let id = UUID()
+        previewID = id
+        previewDraft = ""
+        previewLevels = []
+        let reader = RecordingPreview(recording: url)
+        levelTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 150_000_000)
+                guard !Task.isCancelled, let self, self.previewID == id else { break }
+                guard let levels = await reader.levels(barCount: 16) else { continue }
+                guard !Task.isCancelled, self.previewID == id else { break }
+                self.previewLevels = levels
+                self.pushPreview()
+            }
+        }
+        guard configuration.offline else { return }
+        draftTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 400_000_000)
+                guard !Task.isCancelled, let self, self.previewID == id else { break }
+                guard let samples = await reader.speechSamples() else { continue }
+                guard let text = try? await OfflineSpeech.shared.preview(samples, recording: id),
+                      !text.isEmpty, !Task.isCancelled, self.previewID == id else { continue }
+                self.previewDraft = text
+                self.pushPreview()
+            }
+        }
+    }
+
+    private func stopPreview() {
+        levelTask?.cancel()
+        levelTask = nil
+        draftTask?.cancel()
+        draftTask = nil
+        previewDraft = ""
+        previewLevels = []
+        let id = previewID
+        Task { await OfflineSpeech.shared.endPreview(recording: id) }
+    }
 
     private static let standbyDuration: TimeInterval = 10 * 60
     private(set) var standbyDeadline: Date?
@@ -295,12 +384,7 @@ final class VoiceRecorder: NSObject {
         self.engine = engine
         self.capture = capture
         standbyDeadline = Date().addingTimeInterval(Self.standbyDuration)
-        deadlineTimer = Timer.scheduledTimer(withTimeInterval: Self.standbyDuration, repeats: false) { [weak self] _ in
-            Task { @MainActor in
-                guard let self, self.capture === capture else { return }
-                self.endStandby(keeping: true)
-            }
-        }
+        scheduleDeadlineTimer(for: capture)
         configurationObserver = NotificationCenter.default.addObserver(
             forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main
         ) { [weak self] _ in
@@ -316,6 +400,25 @@ final class VoiceRecorder: NSObject {
         endStandby(keeping: false)
     }
 
+    @discardableResult
+    func extendStandby() -> Date? {
+        guard let capture, capture.extend(by: Self.standbyDuration) else { return nil }
+        let next = Date().addingTimeInterval(Self.standbyDuration)
+        standbyDeadline = next
+        scheduleDeadlineTimer(for: capture)
+        return next
+    }
+
+    private func scheduleDeadlineTimer(for capture: StandbyCapture) {
+        deadlineTimer?.invalidate()
+        deadlineTimer = Timer.scheduledTimer(withTimeInterval: Self.standbyDuration, repeats: false) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, self.capture === capture else { return }
+                self.endStandby(keeping: true)
+            }
+        }
+    }
+
     private func endStandby(keeping: Bool) {
         guard let capture, let engine else { return }
         self.capture = nil
@@ -327,6 +430,7 @@ final class VoiceRecorder: NSObject {
         configurationObserver = nil
         segmentTimer?.invalidate()
         segmentTimer = nil
+        stopPreview()
         let result = capture.end(keeping: keeping)
         engine.stop()
         engine.inputNode.removeTap(onBus: 0)
@@ -350,6 +454,7 @@ final class VoiceRecorder: NSObject {
             }
             do {
                 let id = try capture.begin(url: url, settings: Self.wavSettings, maximum: Self.maximumDuration)
+                startPreview(url: url)
                 segmentTimer = Timer.scheduledTimer(withTimeInterval: Self.maximumDuration, repeats: false) { [weak self] _ in
                     Task { @MainActor in
                         guard let self, self.capture === capture, capture.matches(id) else { return }
@@ -377,6 +482,7 @@ final class VoiceRecorder: NSObject {
                 throw VoiceRecorderError.recordingUnavailable
             }
             recorder = audioRecorder
+            startPreview(url: url)
         } catch {
             try? FileManager.default.removeItem(at: url)
             deactivateAudio()
@@ -385,6 +491,7 @@ final class VoiceRecorder: NSObject {
     }
 
     func stop() {
+        stopPreview()
         segmentTimer?.invalidate()
         segmentTimer = nil
         if let capture {
@@ -396,6 +503,7 @@ final class VoiceRecorder: NSObject {
     }
 
     func cancel() {
+        stopPreview()
         pendingStart = nil
         segmentTimer?.invalidate()
         segmentTimer = nil

@@ -1,8 +1,17 @@
 import UIKit
 @main class AppHarness: UIResponder, UIApplicationDelegate {
+    func application(_ application: UIApplication, configurationForConnecting session: UISceneSession,
+                     options: UIScene.ConnectionOptions) -> UISceneConfiguration {
+        let configuration = UISceneConfiguration(name: "Default", sessionRole: session.role)
+        configuration.delegateClass = HarnessScene.self
+        return configuration
+    }
+}
+final class HarnessScene: UIResponder, UIWindowSceneDelegate {
     var window: UIWindow?
-    func application(_ application: UIApplication, didFinishLaunchingWithOptions options: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
-        let window = UIWindow(frame: UIScreen.main.bounds)
+    func scene(_ scene: UIScene, willConnectTo session: UISceneSession, options: UIScene.ConnectionOptions) {
+        guard let windowScene = scene as? UIWindowScene else { return }
+        let window = UIWindow(windowScene: windowScene)
         let controller = UIViewController()
         controller.view.backgroundColor = .systemBackground
         let text = TargetView(frame: CGRect(x: 30, y: 160, width: 320, height: 120))
@@ -12,7 +21,6 @@ import UIKit
         self.window = window
         window.makeKeyAndVisible()
         text.becomeFirstResponder()
-        return true
     }
 }
 private final class TargetView: UITextView {

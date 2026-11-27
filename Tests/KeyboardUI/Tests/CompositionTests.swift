@@ -42,7 +42,7 @@ final class SegmentEditing: KeyboardUITest {
     }
 
     func testUnicodeThenMixedTyping() {
-        for key in ["⇧","U","123","4","ABC","e","123","2","ABC","d","中"] { tap(key) }
+        for key in ["Shift","U","123","4","ABC","e","123","2","ABC","d","中"] { tap(key) }
         XCTAssertEqual(field.value as? String, "中")
         type("woyongchatg")
         tap("我用ChatGPT")

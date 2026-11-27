@@ -11,6 +11,7 @@ targets:
     sources: [Host]
     settings:
       PRODUCT_BUNDLE_IDENTIFIER: local.yah.qa.harness
+      INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
   KeyboardUITests:
     type: bundle.ui-testing
     platform: iOS
