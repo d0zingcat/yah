@@ -24,6 +24,8 @@ iPhone 可在“设置 → 通用 → 键盘 → 键盘 → 添加新键盘”�
 
 项目进度和设备验收步骤见 [设计与执行手册](DESIGN-AND-EXECUTION.md)。
 
+iOS 签名归档、IPA 导出和内测分发步骤见 [TestFlight 打包操作报告](TESTFLIGHT.md)。
+
 ## 雾凇拼音数据
 
 [`Shared/RimeData`](Shared/RimeData) 内的雾凇拼音数据来自 [iDvel/rime-ice@927e1cf](https://github.com/iDvel/rime-ice/tree/927e1cf1d3eeb9bf4be85e3f684dba4dd485b6f6)，按 [GPL-3.0](Shared/RimeData/LICENSE) 分发。保留了全拼、英文混输、部件反查、Lua 和表情所需的文件。Yah 调整了 `default.yaml`，列出全拼、九宫格、小鹤双拼和自然码双拼方案，每页四个候选。简繁转换的配置和词典来自 [librime-xcframework 1.17.0-pack.10.0.0](https://github.com/ghostflyby/librime-xcframework/tree/1.17.0-pack.10.0.0/Sources/RimeOpenCCData)，许可见 [OpenCC copyright](Shared/RimeData/opencc/copyright)。
