@@ -8,6 +8,42 @@
 	<string>56</string>
 	<key>objects</key>
 	<dict>
+		<key>F100000000000000000000C1</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXFileReference</string>
+			<key>lastKnownFileType</key>
+			<string>sourcecode.swift</string>
+			<key>path</key>
+			<string>Keyboard/ContextualRanking.swift</string>
+			<key>sourceTree</key>
+			<string>&lt;group&gt;</string>
+		</dict>
+		<key>F100000000000000000000C2</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXFileReference</string>
+			<key>lastKnownFileType</key>
+			<string>folder</string>
+			<key>path</key>
+			<string>Keyboard/ContextModel</string>
+			<key>sourceTree</key>
+			<string>&lt;group&gt;</string>
+		</dict>
+		<key>F100000000000000000000C3</key>
+		<dict>
+			<key>fileRef</key>
+			<string>F100000000000000000000C1</string>
+			<key>isa</key>
+			<string>PBXBuildFile</string>
+		</dict>
+		<key>F100000000000000000000C4</key>
+		<dict>
+			<key>fileRef</key>
+			<string>F100000000000000000000C2</string>
+			<key>isa</key>
+			<string>PBXBuildFile</string>
+		</dict>
 		<key>000000000000000000000001</key>
 		<dict>
 			<key>isa</key>
@@ -38,6 +74,17 @@
 			<string>sourcecode.swift</string>
 			<key>path</key>
 			<string>Keyboard/Keyboard.swift</string>
+			<key>sourceTree</key>
+			<string>&lt;group&gt;</string>
+		</dict>
+		<key>F000000000000000000000A1</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXFileReference</string>
+			<key>lastKnownFileType</key>
+			<string>sourcecode.swift</string>
+			<key>path</key>
+			<string>Keyboard/CandidatePanel.swift</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
@@ -216,6 +263,13 @@
 			<key>isa</key>
 			<string>PBXBuildFile</string>
 		</dict>
+		<key>F000000000000000000000A2</key>
+		<dict>
+			<key>fileRef</key>
+			<string>F000000000000000000000A1</string>
+			<key>isa</key>
+			<string>PBXBuildFile</string>
+		</dict>
 		<key>00000000000000000000000F</key>
 		<dict>
 			<key>fileRef</key>
@@ -230,8 +284,12 @@
 			<key>files</key>
 			<array>
 				<string>00000000000000000000000E</string>
+				<string>F000000000000000000000A2</string>
 				<string>00000000000000000000000F</string>
+				<string>F100000000000000000000C3</string>
 				<string>000000000000000000000032</string>
+				<string>000000000000000000000069</string>
+				<string>000000000000000000000072</string>
 			</array>
 			<key>isa</key>
 			<string>PBXSourcesBuildPhase</string>
@@ -248,6 +306,8 @@
 				<string>YES</string>
 				<key>CLANG_ENABLE_OBJC_ARC</key>
 				<string>YES</string>
+				<key>CODE_SIGN_ENTITLEMENTS</key>
+				<string>Keyboard/Keyboard.entitlements</string>
 				<key>INFOPLIST_FILE</key>
 				<string>Keyboard/Info.plist</string>
 				<key>IPHONEOS_DEPLOYMENT_TARGET</key>
@@ -265,6 +325,8 @@
 				<string>iphoneos</string>
 				<key>SKIP_INSTALL</key>
 				<string>YES</string>
+				<key>SWIFT_OBJC_BRIDGING_HEADER</key>
+				<string>Shared/VoiceNotifications.h</string>
 				<key>SWIFT_VERSION</key>
 				<string>5.0</string>
 				<key>TARGETED_DEVICE_FAMILY</key>
@@ -285,6 +347,8 @@
 				<string>YES</string>
 				<key>CLANG_ENABLE_OBJC_ARC</key>
 				<string>YES</string>
+				<key>CODE_SIGN_ENTITLEMENTS</key>
+				<string>Keyboard/Keyboard.entitlements</string>
 				<key>INFOPLIST_FILE</key>
 				<string>Keyboard/Info.plist</string>
 				<key>IPHONEOS_DEPLOYMENT_TARGET</key>
@@ -302,6 +366,8 @@
 				<string>iphoneos</string>
 				<key>SKIP_INSTALL</key>
 				<string>YES</string>
+				<key>SWIFT_OBJC_BRIDGING_HEADER</key>
+				<string>Shared/VoiceNotifications.h</string>
 				<key>SWIFT_VERSION</key>
 				<string>5.0</string>
 				<key>TARGETED_DEVICE_FAMILY</key>
@@ -381,6 +447,12 @@
 			<key>files</key>
 			<array>
 				<string>000000000000000000000016</string>
+				<string>00000000000000000000003B</string>
+				<string>00000000000000000000003D</string>
+				<string>00000000000000000000003E</string>
+				<string>00000000000000000000006A</string>
+				<string>000000000000000000000071</string>
+				<string>000000000000000000000074</string>
 			</array>
 			<key>isa</key>
 			<string>PBXSourcesBuildPhase</string>
@@ -431,16 +503,27 @@
 		<dict>
 			<key>buildSettings</key>
 			<dict>
+				<key>ASSETCATALOG_COMPILER_APPICON_NAME</key>
+				<string>AppIcon</string>
+				<key>CODE_SIGN_ENTITLEMENTS</key>
+				<string>Host/Yah.entitlements</string>
 				<key>INFOPLIST_FILE</key>
 				<string>Host/Info.plist</string>
 				<key>IPHONEOS_DEPLOYMENT_TARGET</key>
 				<string>16.0</string>
+				<key>OTHER_LDFLAGS</key>
+				<array>
+					<string>$(inherited)</string>
+					<string>-lc++</string>
+				</array>
 				<key>PRODUCT_BUNDLE_IDENTIFIER</key>
 				<string>local.yah.ios</string>
 				<key>PRODUCT_NAME</key>
 				<string>Yah</string>
 				<key>SDKROOT</key>
 				<string>iphoneos</string>
+				<key>SWIFT_OBJC_BRIDGING_HEADER</key>
+				<string>Shared/VoiceNotifications.h</string>
 				<key>SWIFT_VERSION</key>
 				<string>5.0</string>
 				<key>TARGETED_DEVICE_FAMILY</key>
@@ -455,16 +538,27 @@
 		<dict>
 			<key>buildSettings</key>
 			<dict>
+				<key>ASSETCATALOG_COMPILER_APPICON_NAME</key>
+				<string>AppIcon</string>
+				<key>CODE_SIGN_ENTITLEMENTS</key>
+				<string>Host/Yah.entitlements</string>
 				<key>INFOPLIST_FILE</key>
 				<string>Host/Info.plist</string>
 				<key>IPHONEOS_DEPLOYMENT_TARGET</key>
 				<string>16.0</string>
+				<key>OTHER_LDFLAGS</key>
+				<array>
+					<string>$(inherited)</string>
+					<string>-lc++</string>
+				</array>
 				<key>PRODUCT_BUNDLE_IDENTIFIER</key>
 				<string>local.yah.ios</string>
 				<key>PRODUCT_NAME</key>
 				<string>Yah</string>
 				<key>SDKROOT</key>
 				<string>iphoneos</string>
+				<key>SWIFT_OBJC_BRIDGING_HEADER</key>
+				<string>Shared/VoiceNotifications.h</string>
 				<key>SWIFT_VERSION</key>
 				<string>5.0</string>
 				<key>TARGETED_DEVICE_FAMILY</key>
@@ -496,6 +590,8 @@
 			<key>buildPhases</key>
 			<array>
 				<string>000000000000000000000017</string>
+				<string>000000000000000000000075</string>
+				<string>000000000000000000000041</string>
 				<string>000000000000000000000019</string>
 			</array>
 			<key>buildRules</key>
@@ -508,6 +604,12 @@
 			<string>PBXNativeTarget</string>
 			<key>name</key>
 			<string>Yah</string>
+			<key>packageProductDependencies</key>
+			<array>
+				<string>000000000000000000000076</string>
+				<string>000000000000000000000077</string>
+				<string>AF0000000000000000000002</string>
+			</array>
 			<key>productName</key>
 			<string>Yah</string>
 			<key>productReference</key>
@@ -520,14 +622,26 @@
 			<key>children</key>
 			<array>
 				<string>000000000000000000000001</string>
+				<string>F100000000000000000000C1</string>
+				<string>F100000000000000000000C2</string>
 				<string>000000000000000000000002</string>
 				<string>000000000000000000000003</string>
+				<string>F000000000000000000000A1</string>
 				<string>000000000000000000000004</string>
 				<string>000000000000000000000005</string>
 				<string>00000000000000000000000D</string>
 				<string>000000000000000000000015</string>
 				<string>000000000000000000000026</string>
 				<string>000000000000000000000027</string>
+				<string>000000000000000000000038</string>
+				<string>000000000000000000000039</string>
+				<string>00000000000000000000003A</string>
+				<string>00000000000000000000003F</string>
+				<string>000000000000000000000060</string>
+				<string>000000000000000000000068</string>
+				<string>000000000000000000000070</string>
+				<string>000000000000000000000073</string>
+				<string>AF0000000000000000000004</string>
 			</array>
 			<key>isa</key>
 			<string>PBXGroup</string>
@@ -579,12 +693,14 @@
 			<key>knownRegions</key>
 			<array>
 				<string>en</string>
+				<string>zh-Hans</string>
 			</array>
 			<key>mainGroup</key>
 			<string>00000000000000000000001F</string>
 			<key>packageReferences</key>
 			<array>
 				<string>000000000000000000000024</string>
+				<string>AF0000000000000000000001</string>
 			</array>
 			<key>projectDirPath</key>
 			<string></string>
@@ -773,11 +889,309 @@
 			<key>files</key>
 			<array>
 				<string>000000000000000000000035</string>
+				<string>F100000000000000000000C4</string>
 			</array>
 			<key>isa</key>
 			<string>PBXResourcesBuildPhase</string>
 			<key>runOnlyForDeploymentPostprocessing</key>
 			<integer>0</integer>
+		</dict>
+		<key>000000000000000000000038</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXFileReference</string>
+			<key>lastKnownFileType</key>
+			<string>sourcecode.swift</string>
+			<key>path</key>
+			<string>Shared/VoiceConfiguration.swift</string>
+			<key>sourceTree</key>
+			<string>&lt;group&gt;</string>
+		</dict>
+		<key>000000000000000000000039</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXFileReference</string>
+			<key>lastKnownFileType</key>
+			<string>sourcecode.swift</string>
+			<key>path</key>
+			<string>Shared/VoiceTranscription.swift</string>
+			<key>sourceTree</key>
+			<string>&lt;group&gt;</string>
+		</dict>
+		<key>00000000000000000000003A</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXFileReference</string>
+			<key>lastKnownFileType</key>
+			<string>sourcecode.swift</string>
+			<key>path</key>
+			<string>Host/VoiceRecorder.swift</string>
+			<key>sourceTree</key>
+			<string>&lt;group&gt;</string>
+		</dict>
+		<key>00000000000000000000003B</key>
+		<dict>
+			<key>fileRef</key>
+			<string>000000000000000000000038</string>
+			<key>isa</key>
+			<string>PBXBuildFile</string>
+		</dict>
+		<key>00000000000000000000003C</key>
+		<dict>
+			<key>fileRef</key>
+			<string>000000000000000000000038</string>
+			<key>isa</key>
+			<string>PBXBuildFile</string>
+		</dict>
+		<key>00000000000000000000003D</key>
+		<dict>
+			<key>fileRef</key>
+			<string>000000000000000000000039</string>
+			<key>isa</key>
+			<string>PBXBuildFile</string>
+		</dict>
+		<key>00000000000000000000003E</key>
+		<dict>
+			<key>fileRef</key>
+			<string>00000000000000000000003A</string>
+			<key>isa</key>
+			<string>PBXBuildFile</string>
+		</dict>
+		<key>00000000000000000000003F</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXFileReference</string>
+			<key>lastKnownFileType</key>
+			<string>folder.assetcatalog</string>
+			<key>path</key>
+			<string>Host/Assets.xcassets</string>
+			<key>sourceTree</key>
+			<string>&lt;group&gt;</string>
+		</dict>
+		<key>000000000000000000000040</key>
+		<dict>
+			<key>fileRef</key>
+			<string>00000000000000000000003F</string>
+			<key>isa</key>
+			<string>PBXBuildFile</string>
+		</dict>
+		<key>000000000000000000000041</key>
+		<dict>
+			<key>buildActionMask</key>
+			<integer>2147483647</integer>
+			<key>files</key>
+			<array>
+				<string>000000000000000000000040</string>
+				<string>000000000000000000000061</string>
+				<string>AF0000000000000000000005</string>
+			</array>
+			<key>isa</key>
+			<string>PBXResourcesBuildPhase</string>
+			<key>runOnlyForDeploymentPostprocessing</key>
+			<integer>0</integer>
+		</dict>
+		<key>000000000000000000000060</key>
+		<dict>
+			<key>children</key>
+			<array>
+				<string>000000000000000000000062</string>
+				<string>000000000000000000000063</string>
+			</array>
+			<key>isa</key>
+			<string>PBXVariantGroup</string>
+			<key>name</key>
+			<string>AppShortcuts.strings</string>
+			<key>sourceTree</key>
+			<string>&lt;group&gt;</string>
+		</dict>
+		<key>000000000000000000000061</key>
+		<dict>
+			<key>fileRef</key>
+			<string>000000000000000000000060</string>
+			<key>isa</key>
+			<string>PBXBuildFile</string>
+		</dict>
+		<key>000000000000000000000062</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXFileReference</string>
+			<key>lastKnownFileType</key>
+			<string>text.plist.strings</string>
+			<key>name</key>
+			<string>en</string>
+			<key>path</key>
+			<string>Host/en.lproj/AppShortcuts.strings</string>
+			<key>sourceTree</key>
+			<string>&lt;group&gt;</string>
+		</dict>
+		<key>000000000000000000000063</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXFileReference</string>
+			<key>lastKnownFileType</key>
+			<string>text.plist.strings</string>
+			<key>name</key>
+			<string>zh-Hans</string>
+			<key>path</key>
+			<string>Host/zh-Hans.lproj/AppShortcuts.strings</string>
+			<key>sourceTree</key>
+			<string>&lt;group&gt;</string>
+		</dict>
+		<key>000000000000000000000068</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXFileReference</string>
+			<key>lastKnownFileType</key>
+			<string>sourcecode.swift</string>
+			<key>path</key>
+			<string>Shared/VoiceHandoff.swift</string>
+			<key>sourceTree</key>
+			<string>&lt;group&gt;</string>
+		</dict>
+		<key>000000000000000000000069</key>
+		<dict>
+			<key>fileRef</key>
+			<string>000000000000000000000068</string>
+			<key>isa</key>
+			<string>PBXBuildFile</string>
+		</dict>
+		<key>00000000000000000000006A</key>
+		<dict>
+			<key>fileRef</key>
+			<string>000000000000000000000068</string>
+			<key>isa</key>
+			<string>PBXBuildFile</string>
+		</dict>
+		<key>000000000000000000000070</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXFileReference</string>
+			<key>lastKnownFileType</key>
+			<string>sourcecode.swift</string>
+			<key>path</key>
+			<string>Shared/CommunitySchemes.swift</string>
+			<key>sourceTree</key>
+			<string>&lt;group&gt;</string>
+		</dict>
+		<key>000000000000000000000071</key>
+		<dict>
+			<key>fileRef</key>
+			<string>000000000000000000000070</string>
+			<key>isa</key>
+			<string>PBXBuildFile</string>
+		</dict>
+		<key>000000000000000000000072</key>
+		<dict>
+			<key>fileRef</key>
+			<string>000000000000000000000070</string>
+			<key>isa</key>
+			<string>PBXBuildFile</string>
+		</dict>
+		<key>000000000000000000000073</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXFileReference</string>
+			<key>lastKnownFileType</key>
+			<string>sourcecode.swift</string>
+			<key>path</key>
+			<string>Host/SchemeImporter.swift</string>
+			<key>sourceTree</key>
+			<string>&lt;group&gt;</string>
+		</dict>
+		<key>000000000000000000000074</key>
+		<dict>
+			<key>fileRef</key>
+			<string>000000000000000000000073</string>
+			<key>isa</key>
+			<string>PBXBuildFile</string>
+		</dict>
+		<key>000000000000000000000075</key>
+		<dict>
+			<key>buildActionMask</key>
+			<integer>2147483647</integer>
+			<key>files</key>
+			<array>
+				<string>000000000000000000000078</string>
+				<string>000000000000000000000079</string>
+				<string>AF0000000000000000000003</string>
+			</array>
+			<key>isa</key>
+			<string>PBXFrameworksBuildPhase</string>
+			<key>runOnlyForDeploymentPostprocessing</key>
+			<integer>0</integer>
+		</dict>
+		<key>000000000000000000000076</key>
+		<dict>
+			<key>isa</key>
+			<string>XCSwiftPackageProductDependency</string>
+			<key>package</key>
+			<string>000000000000000000000024</string>
+			<key>productName</key>
+			<string>Rime</string>
+		</dict>
+		<key>000000000000000000000077</key>
+		<dict>
+			<key>isa</key>
+			<string>XCSwiftPackageProductDependency</string>
+			<key>package</key>
+			<string>000000000000000000000024</string>
+			<key>productName</key>
+			<string>RimeStatic</string>
+		</dict>
+		<key>000000000000000000000078</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXBuildFile</string>
+			<key>productRef</key>
+			<string>000000000000000000000076</string>
+		</dict>
+		<key>000000000000000000000079</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXBuildFile</string>
+			<key>productRef</key>
+			<string>000000000000000000000077</string>
+		</dict>
+		<key>AF0000000000000000000001</key>
+		<dict>
+			<key>isa</key>
+			<string>XCLocalSwiftPackageReference</string>
+			<key>relativePath</key>
+			<string>Host/OfflineSpeech</string>
+		</dict>
+		<key>AF0000000000000000000002</key>
+		<dict>
+			<key>isa</key>
+			<string>XCSwiftPackageProductDependency</string>
+			<key>package</key>
+			<string>AF0000000000000000000001</string>
+			<key>productName</key>
+			<string>YahOfflineSpeech</string>
+		</dict>
+		<key>AF0000000000000000000003</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXBuildFile</string>
+			<key>productRef</key>
+			<string>AF0000000000000000000002</string>
+		</dict>
+		<key>AF0000000000000000000004</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXFileReference</string>
+			<key>lastKnownFileType</key>
+			<string>folder</string>
+			<key>path</key>
+			<string>Host/VoiceModel</string>
+			<key>sourceTree</key>
+			<string>SOURCE_ROOT</string>
+		</dict>
+		<key>AF0000000000000000000005</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXBuildFile</string>
+			<key>fileRef</key>
+			<string>AF0000000000000000000004</string>
 		</dict>
 	</dict>
 	<key>rootObject</key>

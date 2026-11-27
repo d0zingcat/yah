@@ -1,5 +1,5 @@
 {
-  "originHash" : "bd575e11a4e1bf5c23566f1bc227d4925180ba493b38d10cd60f07a3cd4eae50",
+  "originHash" : "fbb60fc7cf6f98e842a1b4d7bf8378583d4f1fc87b80d3bd5c07eec7704a2456",
   "pins" : [
     {
       "identity" : "librime-xcframework",
@@ -8,6 +8,14 @@
       "state" : {
         "revision" : "3938c4386c5f134ce4628f4fef22ca5f03c1130a",
         "version" : "1.17.0-pack.10.0.0"
+      }
+    },
+    {
+      "identity" : "whisper.spm",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/ggml-org/whisper.spm.git",
+      "state" : {
+        "revision" : "a2085436c2eb796af90956b62bd64731f5e5b823"
       }
     }
   ],
