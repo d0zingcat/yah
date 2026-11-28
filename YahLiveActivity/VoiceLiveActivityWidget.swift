@@ -29,7 +29,7 @@ struct VoiceLiveActivityWidget: Widget {
             } compactLeading: {
                 microphone
             } compactTrailing: {
-                timer(context.state)
+                compactStatus(context.state)
             } minimal: {
                 minimalActivity(context.state)
             }
@@ -38,13 +38,13 @@ struct VoiceLiveActivityWidget: Widget {
 
     private var microphone: some View {
         Image(systemName: "mic.circle.fill")
-            .foregroundStyle(.orange)
+            .foregroundStyle(.blue)
             .accessibilityLabel("Yah 语音")
     }
 
     private func minimalActivity(_ state: VoiceStandbyAttributes.ContentState) -> some View {
         ZStack {
-            Circle().fill(.orange)
+            Circle().fill(.blue)
             Image(systemName: state.phase == .listening ? "waveform" : "mic.fill")
                 .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(.white)
@@ -54,22 +54,39 @@ struct VoiceLiveActivityWidget: Widget {
     }
 
     @ViewBuilder
-    private func status(_ state: VoiceStandbyAttributes.ContentState) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(state.phase.title)
-                .font(.headline)
-            timer(state)
-                .font(.caption.monospacedDigit())
+    private func compactStatus(_ state: VoiceStandbyAttributes.ContentState) -> some View {
+        switch state.phase {
+        case .listening:
+            if let started = state.started {
+                Text(started, style: .timer)
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.blue)
+            } else {
+                Image(systemName: "waveform")
+                    .font(.caption2)
+                    .foregroundStyle(.blue)
+            }
+        case .transcribing:
+            Image(systemName: "ellipsis")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        case .standby:
+            Text("就绪")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
         }
     }
 
     @ViewBuilder
-    private func timer(_ state: VoiceStandbyAttributes.ContentState) -> some View {
-        if state.phase != .standby, let started = state.started {
-            Text(started, style: .timer)
-        } else {
-            Text(timerInterval: min(Date(), state.expires)...state.expires, countsDown: true)
-                .monospacedDigit()
+    private func status(_ state: VoiceStandbyAttributes.ContentState) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(state.phase.title)
+                .font(.headline)
+            if state.phase == .listening, let started = state.started {
+                Text(started, style: .timer)
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 

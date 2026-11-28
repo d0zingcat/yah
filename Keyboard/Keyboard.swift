@@ -2,11 +2,10 @@ import SwiftUI
 import UIKit
 
 private struct KeyboardVoiceLink: View {
-    let recovery: UUID?
-    let standbyActive: Bool
     let onRequest: () -> URL?
     let onRejected: () -> Void
     @Environment(\.openURL) private var openURL
+
     var body: some View {
         Button {
             guard let url = onRequest() else { return }
@@ -14,28 +13,18 @@ private struct KeyboardVoiceLink: View {
                 if !accepted { onRejected() }
             }
         } label: {
-            Group {
-                if recovery != nil {
-                    Text("本机重试")
-                } else if standbyActive {
-                    Image(systemName: "mic.fill")
-                        .font(.system(size: 16, weight: .semibold))
-                        .foregroundStyle(.white)
-                        .frame(width: 34, height: 34)
-                        .background(Circle().fill(Color.orange))
-                } else {
-                    Image(systemName: "waveform").font(.title2)
-                }
-            }
-            .font(.callout.weight(.medium))
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .contentShape(Rectangle())
+            Label("语音输入", systemImage: "mic.fill")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(.primary)
+                .padding(.horizontal, 10)
+                .frame(height: 30)
+                .background(Color(uiColor: .secondarySystemFill), in: Capsule())
+                .fixedSize()
         }
         .buttonStyle(.plain)
-        .foregroundStyle(Color.primary)
-        .accessibilityLabel(recovery == nil ? "开始语音输入" : "本机重试上次转写")
-        .accessibilityValue(recovery == nil && standbyActive ? "待机已开启" : "")
-        .accessibilityInputLabels(recovery == nil ? ["开始语音输入"] : ["本机重试", "继续上次本机转写", "继续"])
+        .fixedSize()
+        .accessibilityLabel("语音输入")
+        .accessibilityIdentifier("keyboard-direct-voice")
     }
 }
 
@@ -76,42 +65,23 @@ final class KeyboardController: UIInputViewController {
     private var endingStandby: (id: UUID, document: UUID?, until: Date)?
     private var voiceMessage: (text: String, document: UUID?, until: Date)?
     private var singleSource: (document: UUID, since: Date)?
-    private var foregroundStart: (id: UUID, expires: Date)?
     private var standbyLaunch: (id: UUID, expires: Date)?
+    private var autoStartedVoice: (recording: UUID, startedAt: Date)?
     private var lastDeliveryLookup: (document: UUID, latest: UUID?)?
     private var resultWaitBegan: Date?
     private let voiceStatus = UILabel()
     private weak var mainToolbar: UIView?
-    private weak var typingHeader: UIView?
     private let insertVoice = UIButton(type: .system)
-    private let voiceTools = UIStackView()
-    private let fallbackVoice = UIButton(type: .system)
     private var voiceLaunchCheck: Task<Void, Never>?
-    private let voiceHint = UILabel()
-    private lazy var voiceLink = UIHostingController(rootView: makeVoiceLink())
+    private lazy var voiceLink = UIHostingController(rootView: KeyboardVoiceLink(
+        onRequest: { [weak self] in self?.requestVoiceURL() },
+        onRejected: { [weak self] in self?.showLaunchFallback() }
+    ))
 
-    private var recoverableRecording: UUID?
-    private var voiceLinkStandbyActive = false
     private var isKeyboardVisible = false
 
     deinit {
         if let token = voiceStateToken { notify_cancel(token) }
-    }
-
-    private func makeVoiceLink() -> KeyboardVoiceLink {
-        KeyboardVoiceLink(recovery: recoverableRecording,
-                          standbyActive: voiceLinkStandbyActive,
-                          onRequest: { [weak self] in self?.requestVoiceURL() },
-                          onRejected: { [weak self] in self?.showLaunchFallback() })
-    }
-
-    private func scheduleVoiceLaunchCheck() {
-        voiceLaunchCheck?.cancel()
-        voiceLaunchCheck = Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: 2_500_000_000)
-            guard !Task.isCancelled else { return }
-            self?.showLaunchFallback()
-        }
     }
 
     private func startStandbyDictation(in standby: VoiceHandoff.Standby, document source: UUID, refreshUI: Bool = true) -> Bool {
@@ -132,12 +102,6 @@ final class KeyboardController: UIInputViewController {
                 return false
             }
             voiceLaunchCheck?.cancel()
-            if !voiceTools.isHidden {
-                voiceTools.isHidden = true
-                typingHeader?.isHidden = false
-                fallbackVoice.isHidden = true
-                updateCandidateToggle()
-            }
             startingVoice = (recording, source, now.addingTimeInterval(VoiceHandoff.startRequestLifetime))
             waitingForVoice = (recording, source)
             resultWaitBegan = nil
@@ -149,73 +113,97 @@ final class KeyboardController: UIInputViewController {
         }
     }
 
-    /// Non-nil URL asks the system to open the containing app.
-    private func requestVoiceURL() -> URL? {
-        guard hasFullAccess else {
-            reportVoice("请前往设置 → 通用 → 键盘 → 键盘 → Yah → 允许完全访问，以使用语音输入。", in: currentDocumentID)
-            return nil
-        }
-        let now = Date()
-        guard VoiceHandoff.activeRecording() == nil else { updateVoiceHandoff(); return nil }
-        if let startingVoice, startingVoice.expires > now { return nil }
-        if let retryingVoice, retryingVoice.until > now { return nil }
-        if recoverableRecording != VoiceHandoff.recovery()?.recording {
-            updateVoiceHandoff()
-            reportVoice("语音状态已更新，请点当前语音按钮。", in: currentDocumentID)
-            return nil
-        }
-        voiceMessage = nil
-        let ticket = VoiceHandoff.keyboardTicket()?.uuidString ?? "setup"
-        let standby = VoiceHandoff.standby()
-        if let recording = recoverableRecording {
-            if let standby {
-                do {
-                    try VoiceHandoff.requestRetry(in: standby, recording: recording)
-                    if waitingForVoice?.recording == recording { waitingForVoice = nil; resultWaitBegan = nil }
-                    retryingVoice = (recording, currentDocumentID, now.addingTimeInterval(VoiceHandoff.startRequestLifetime))
-                    updateVoiceHandoff()
-                } catch { reportVoice("未能请求本机重试，请再点一次。", in: currentDocumentID) }
-                return nil
-            }
-            scheduleVoiceLaunchCheck()
-            return URL(string: "local-yah-voice://resume/")!
-                .appendingPathComponent(recording.uuidString)
-                .appendingPathComponent(ticket)
-        }
-        if let standby {
-            guard let source = currentDocumentID else {
-                reportVoice("请回到输入框，再点麦克风。", in: nil)
-                return nil
-            }
-            _ = startStandbyDictation(in: standby, document: source)
-            return nil
-        }
-        let launchID = UUID()
-        VoiceDelivery.saveArmedOrigin(launchID: launchID, document: currentDocumentID)
-        try? VoiceHandoff.rememberStandbyLaunch(id: launchID)
-        standbyLaunch = (launchID, now.addingTimeInterval(30))
-        if let document = currentDocumentID { singleSource = (document, now) }
-        else { singleSource = nil }
-        scheduleVoiceLaunchCheck()
-        return URL(string: "local-yah-voice://standby/")!
-            .appendingPathComponent(launchID.uuidString)
-            .appendingPathComponent(ticket)
-    }
-
-    private func showLaunchFallback() {
-        guard viewIfLoaded?.window != nil, VoiceHandoff.activeRecording() == nil,
-              !(hasFullAccess && VoiceHandoff.standby() != nil),
-              startingVoice == nil, voiceTools.isHidden else { return }
-        voiceLaunchCheck?.cancel()
-        fallbackVoice.sendActions(for: .touchUpInside)
-    }
-
     private func reportVoice(_ message: String, in document: UUID?) {
         voiceMessage = (message, document, Date().addingTimeInterval(16))
         if document == nil || document == currentDocumentID {
             UIAccessibility.post(notification: .announcement, argument: message)
         }
         updateVoiceHandoff()
+    }
+
+    private func requestVoiceURL() -> URL? {
+        guard hasFullAccess else {
+            reportVoice("请在系统设置中为 Yah 键盘开启「允许完全访问」。", in: currentDocumentID)
+            return nil
+        }
+        guard let document = currentDocumentID, viewIfLoaded?.window != nil else {
+            reportVoice("请先点按输入框，再开始语音输入。", in: nil)
+            return nil
+        }
+        guard textDocumentProxy.isSecureTextEntry != true else {
+            reportVoice("密码输入框不支持语音输入。", in: document)
+            return nil
+        }
+        let now = Date()
+        guard VoiceHandoff.activeRecording() == nil else { updateVoiceHandoff(); return nil }
+        if let startingVoice, startingVoice.expires > now { return nil }
+        if let retryingVoice, retryingVoice.until > now { return nil }
+        closeCandidates()
+        voiceMessage = nil
+        let standby = VoiceHandoff.standby()
+        if let recording = VoiceHandoff.recovery()?.recording {
+            if let standby {
+                do {
+                    try VoiceHandoff.requestRetry(in: standby, recording: recording)
+                    if waitingForVoice?.recording == recording { waitingForVoice = nil; resultWaitBegan = nil }
+                    retryingVoice = (recording, document, now.addingTimeInterval(VoiceHandoff.startRequestLifetime))
+                    updateVoiceHandoff()
+                } catch { reportVoice("未能请求本机重试，请再点一次。", in: document) }
+                return nil
+            }
+            scheduleVoiceLaunchCheck()
+            return URL(string: "local-yah-voice://resume/")!
+                .appendingPathComponent(recording.uuidString)
+                .appendingPathComponent(VoiceHandoff.keyboardTicket()?.uuidString ?? "setup")
+        }
+        if let standby {
+            _ = startStandbyDictation(in: standby, document: document)
+            return nil
+        }
+        let launchID = UUID()
+        do {
+            try VoiceHandoff.rememberStandbyLaunch(id: launchID)
+        } catch {
+            reportVoice("无法准备语音待机，请重试。", in: document)
+            return nil
+        }
+        VoiceDelivery.saveArmedOrigin(launchID: launchID, document: document)
+        standbyLaunch = (launchID, now.addingTimeInterval(30))
+        singleSource = (document, now)
+        scheduleVoiceLaunchCheck()
+        return URL(string: "local-yah-voice://standby/")!
+            .appendingPathComponent(launchID.uuidString)
+            .appendingPathComponent(VoiceHandoff.keyboardTicket()?.uuidString ?? "setup")
+    }
+
+    private func scheduleVoiceLaunchCheck() {
+        voiceLaunchCheck?.cancel()
+        voiceLaunchCheck = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 2_500_000_000)
+            guard !Task.isCancelled else { return }
+            self?.showLaunchFallback()
+        }
+    }
+
+    private func showLaunchFallback() {
+        guard viewIfLoaded?.window != nil, VoiceHandoff.activeRecording() == nil,
+              VoiceHandoff.standby() == nil, startingVoice == nil else { return }
+        voiceLaunchCheck?.cancel()
+        if let launch = standbyLaunch {
+            VoiceHandoff.cancelStandbyLaunch(launch.id)
+            VoiceDelivery.clearArmedOrigin(launch.id)
+            standbyLaunch = nil
+            singleSource = nil
+        }
+        reportVoice("无法打开 Yah，请先打开 Yah 开启语音待机。", in: currentDocumentID)
+    }
+
+    private func openVoice() {
+        guard let url = requestVoiceURL() else { return }
+        guard let context = extensionContext else { showLaunchFallback(); return }
+        context.open(url) { [weak self] accepted in
+            if !accepted { DispatchQueue.main.async { self?.showLaunchFallback() } }
+        }
     }
 
     private func endStandby() {
@@ -227,6 +215,8 @@ final class KeyboardController: UIInputViewController {
         } catch { reportVoice("未能结束连续听写，请重试。", in: currentDocumentID) }
     }
 
+    private let settingsButton = UIButton(type: .system)
+    private let settingsPanel = KeyboardSettingsPanel()
     private let expandCandidates = UIButton(type: .system)
     private lazy var candidatePanel = CandidatePanel(fetch: { [weak self] start, limit in
         self?.composition.expandedChoices(startingAt: start, limit: limit) ?? []
@@ -248,15 +238,34 @@ final class KeyboardController: UIInputViewController {
     private func closeCandidates() {
         guard !candidatePanel.isHidden else { return }
         candidatePanel.dismiss()
-        rows.isHidden = !voicePanel.isHidden
+        rows.isHidden = !voicePanel.isHidden || !settingsPanel.isHidden
         updateCandidateToggle()
     }
 
+    private func closeSettings() {
+        guard !settingsPanel.isHidden else { return }
+        settingsPanel.isHidden = true
+        settingsPanel.resetToRoot()
+        rows.isHidden = !voicePanel.isHidden || !candidatePanel.isHidden
+        updateSettingsToggle()
+    }
+
+    private func updateSettingsToggle() {
+        settingsButton.isHidden = !composition.spelling.isEmpty
+        let open = !settingsPanel.isHidden
+        settingsButton.accessibilityLabel = open ? "收起设置" : "键盘设置"
+        let symbol = UIImage.SymbolConfiguration(pointSize: 16, weight: .medium)
+        settingsButton.setImage(UIImage(systemName: open ? "chevron.down" : "square.grid.2x2", withConfiguration: symbol), for: .normal)
+        settingsButton.tintColor = open ? .systemBlue : .label
+    }
+
     private func updateCandidateToggle() {
-        expandCandidates.isHidden = composition.spelling.isEmpty || !voiceTools.isHidden
+        expandCandidates.isHidden = composition.spelling.isEmpty
         let closed = candidatePanel.isHidden
         expandCandidates.accessibilityLabel = closed ? "展开候选" : "收起候选"
-        expandCandidates.setImage(UIImage(systemName: closed ? "chevron.down" : "chevron.up"), for: .normal)
+        let symbol = UIImage.SymbolConfiguration(pointSize: 14, weight: .semibold)
+        expandCandidates.setImage(UIImage(systemName: closed ? "chevron.down" : "chevron.up", withConfiguration: symbol), for: .normal)
+        expandCandidates.tintColor = .secondaryLabel
     }
 
     private enum Scheme: String, CaseIterable {
@@ -293,7 +302,9 @@ final class KeyboardController: UIInputViewController {
         super.viewDidLoad()
         VoiceDelivery.prune()
         if UserDefaults.standard.bool(forKey: Self.contextPreference) { enableContextualRanking() }
-        if let saved = UserDefaults.standard.string(forKey: "scheme"), let choice = Scheme(rawValue: saved),
+        let sharedScheme = UserDefaults(suiteName: "group.local.yah.voice")?.string(forKey: "scheme")
+        if let saved = sharedScheme ?? UserDefaults.standard.string(forKey: "scheme"),
+           let choice = Scheme(rawValue: saved),
            composition.useSchema(saved) { scheme = choice }
         composition.setOutputForm(outputForm)
         view.backgroundColor = Self.background
@@ -317,16 +328,19 @@ final class KeyboardController: UIInputViewController {
         spelling.textColor = .secondaryLabel
         spelling.lineBreakMode = .byTruncatingHead
         let header = UIStackView(arrangedSubviews: [spelling])
-        typingHeader = header
         header.axis = .vertical
         header.isLayoutMarginsRelativeArrangement = true
-        header.layoutMargins = UIEdgeInsets(top: 0, left: 3, bottom: 0, right: 3)
+        header.layoutMargins = UIEdgeInsets(top: 0, left: 4, bottom: 0, right: 2)
+        header.setContentHuggingPriority(UILayoutPriority(1), for: .horizontal)
+        header.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         let scroll = UIScrollView()
         // The toolbar is a single opaque keyboard row. System scroll-edge glass can obscure
         // the candidate glyphs on iOS 26 even when the content fits on one line.
         scroll.contentInsetAdjustmentBehavior = .never
         scroll.backgroundColor = Self.background
         scroll.clipsToBounds = true
+        scroll.setContentHuggingPriority(UILayoutPriority(1), for: .horizontal)
+        scroll.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         if #available(iOS 26.0, *) {
             scroll.topEdgeEffect.isHidden = true
             scroll.bottomEdgeEffect.isHidden = true
@@ -346,75 +360,13 @@ final class KeyboardController: UIInputViewController {
             suggestions.heightAnchor.constraint(equalTo: scroll.frameLayoutGuide.heightAnchor)])
         addChild(voiceLink)
         voiceLink.view.backgroundColor = .clear
-        voiceLink.view.widthAnchor.constraint(equalToConstant: 48).isActive = true
-        let voice = fallbackVoice
-        voice.setTitle("打字", for: .normal)
-        voice.accessibilityLabel = "返回打字"
-        voice.isHidden = true
-
-        let hint = voiceHint
-        hint.font = .preferredFont(forTextStyle: .caption2)
-        hint.numberOfLines = 2
-        hint.text = "点开始后，轻点系统通知录音"
-        hint.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        pasteConfiguration = UIPasteConfiguration(forAccepting: NSString.self)
-        let paste = UIPasteControl(configuration: .init())
-        paste.target = self
-        paste.accessibilityLabel = "粘贴转写文字"
-        voiceTools.spacing = 8
-        voiceTools.alignment = .center
-        voice.addAction(UIAction { [weak self, weak voice, weak hint] _ in
-            guard let self else { return }
-            closeCandidates()
-            voiceTools.isHidden.toggle()
-            updateCandidateToggle()
-            header.isHidden = !voiceTools.isHidden
-            voice?.isHidden = voiceTools.isHidden
-            updateVoiceHandoff()
-            if voiceTools.isHidden {
-                if let start = foregroundStart { VoiceHandoff.cancelForegroundStart(start.id) }
-                foregroundStart = nil
-                if let launch = standbyLaunch {
-                    VoiceHandoff.cancelStandbyLaunch(launch.id)
-                    VoiceDelivery.clearArmedOrigin(launch.id)
-                }
-                standbyLaunch = nil
-                singleSource = nil
-                return
-            }
-            if recoverableRecording != nil {
-                hint?.text = "请打开 Yah，点「继续上次本机转写」。"
-                UIAccessibility.post(notification: .announcement, argument: hint?.text)
-                return
-            }
-            let hasPendingLaunch = foregroundStart.map { $0.expires > Date() } == true
-                || standbyLaunch.map { $0.expires > Date() } == true
-            hint?.text = hasPendingLaunch
-                ? "现在打开 Yah 即可录音。" : "正在尝试用通知打开 Yah…"
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                do {
-                    let sent = try await VoicePrompt.request()
-                    guard !voiceTools.isHidden else { return }
-                    let activeLaunch = foregroundStart.map { $0.expires > Date() } == true
-                        || standbyLaunch.map { $0.expires > Date() } == true
-                    if activeLaunch { hint?.text = "现在打开 Yah 即可录音。" }
-                    else { hint?.text = sent ? "轻点 Yah 通知开始录音" : "请打开 Yah，点「开始跨应用语音输入」，再返回这里。" }
-                } catch {
-                    guard !voiceTools.isHidden else { return }
-                    let activeLaunch = foregroundStart.map { $0.expires > Date() } == true
-                        || standbyLaunch.map { $0.expires > Date() } == true
-                    hint?.text = activeLaunch
-                        ? "现在打开 Yah 即可录音。" : "请打开 Yah，点「开始跨应用语音输入」，再返回这里。"
-                }
-                UIAccessibility.post(notification: .announcement, argument: hint?.text)
-            }
-        }, for: .touchUpInside)
-        voiceTools.addArrangedSubview(hint)
-        voiceTools.addArrangedSubview(paste)
-        voiceTools.isHidden = true
+        voiceLink.view.setContentHuggingPriority(.required, for: .horizontal)
+        voiceLink.view.setContentCompressionResistancePriority(.required, for: .horizontal)
+        voiceLink.sizingOptions = .intrinsicContentSize
         insertVoice.setTitle("插入转写", for: .normal)
         insertVoice.accessibilityLabel = "插入转写"
+        insertVoice.setContentHuggingPriority(.required, for: .horizontal)
+        insertVoice.setContentCompressionResistancePriority(.required, for: .horizontal)
         insertVoice.addAction(UIAction { [weak self] _ in
             if let item = VoiceHandoff.pending() { self?.insertPendingVoice(item) }
         }, for: .touchUpInside)
@@ -424,6 +376,8 @@ final class KeyboardController: UIInputViewController {
         stopVoice.titleLabel?.adjustsFontForContentSizeCategory = true
         stopVoice.titleLabel?.adjustsFontSizeToFitWidth = true
         stopVoice.isHidden = true
+        stopVoice.setContentHuggingPriority(.required, for: .horizontal)
+        stopVoice.setContentCompressionResistancePriority(.required, for: .horizontal)
         let stopWidth = stopVoice.widthAnchor.constraint(greaterThanOrEqualToConstant: 64)
         stopWidth.priority = UILayoutPriority(999)
         stopWidth.isActive = true
@@ -435,16 +389,40 @@ final class KeyboardController: UIInputViewController {
             updateVoiceHandoff()
         }, for: .touchUpInside)
         stopVoice.addAction(UIAction { [weak self] _ in self?.stopActiveVoice() }, for: .touchUpInside)
+        settingsButton.widthAnchor.constraint(equalToConstant: 36).isActive = true
+        settingsButton.setContentHuggingPriority(.required, for: .horizontal)
+        settingsButton.setContentCompressionResistancePriority(.required, for: .horizontal)
+        settingsButton.accessibilityIdentifier = "keyboard-settings-toggle"
+        settingsButton.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            if settingsPanel.isHidden {
+                closeCandidates()
+                rows.isHidden = true
+                settingsPanel.isHidden = false
+                settingsPanel.resetToRoot()
+                refreshSettingsPanel()
+                updateSettingsToggle()
+            } else {
+                closeSettings()
+            }
+        }, for: .touchUpInside)
         expandCandidates.widthAnchor.constraint(equalToConstant: 34).isActive = true
+        expandCandidates.setContentHuggingPriority(.required, for: .horizontal)
+        expandCandidates.setContentCompressionResistancePriority(.required, for: .horizontal)
         expandCandidates.addAction(UIAction { [weak self] _ in
             guard let self else { return }
             if candidatePanel.isHidden {
+                closeSettings()
                 rows.isHidden = true
                 candidatePanel.show()
                 updateCandidateToggle()
             } else { closeCandidates() }
         }, for: .touchUpInside)
-        let toolbar = UIStackView(arrangedSubviews: [header, expandCandidates, voiceTools, recordingPreview, stopVoice, insertVoice, voice, voiceLink.view!])
+        let toolbar = UIStackView(arrangedSubviews: [settingsButton, header, expandCandidates, recordingPreview, stopVoice, insertVoice, voiceLink.view])
+        toolbar.spacing = 4
+        toolbar.isLayoutMarginsRelativeArrangement = true
+        toolbar.layoutMargins = UIEdgeInsets(top: 0, left: 4, bottom: 0, right: 4)
+        voiceLink.didMove(toParent: self)
         mainToolbar = toolbar
         let previewWidth = recordingPreview.widthAnchor.constraint(equalTo: toolbar.widthAnchor, multiplier: 0.40)
         previewWidth.priority = .defaultHigh
@@ -458,13 +436,18 @@ final class KeyboardController: UIInputViewController {
         voiceStatus.isHidden = true
         voiceStatus.accessibilityIdentifier = "voice-request-status"
         stack.addArrangedSubview(voiceStatus)
-        voiceLink.didMove(toParent: self)
 
         voicePanel.isHidden = true
         voicePanel.onCancel = { [weak self] in self?.cancelActiveVoice() }
         voicePanel.onStop = { [weak self] in self?.stopActiveVoice() }
         voicePanel.onEndStandby = { [weak self] in self?.endStandby() }
+        voicePanel.onPanelTap = { [weak self] in self?.stopActiveVoice() }
+        voicePanel.onPrimaryAction = { [weak self] in self?.stopActiveVoice() }
         stack.addArrangedSubview(voicePanel)
+
+        settingsPanel.isHidden = true
+        settingsPanel.onClose = { [weak self] in self?.closeSettings() }
+        stack.addArrangedSubview(settingsPanel)
 
         rows.axis = .vertical
         rows.distribution = .fillEqually
@@ -496,8 +479,11 @@ final class KeyboardController: UIInputViewController {
         if stoppingVoice?.recording == session.id, let until = stoppingVoice?.until, until > Date() { return }
         if notify_post(session.stopSignal) == NOTIFY_STATUS_OK {
             stoppingVoice = (session.id, Date().addingTimeInterval(2))
-            if let document = VoiceDelivery.origin(for: session.id) ?? currentDocumentID,
-               let origin = VoiceDelivery.bind(session.id, to: document) {
+            if let document = currentDocumentID {
+                let origin = VoiceDelivery.rebind(session.id, to: document) ?? document
+                waitingForVoice = (session.id, origin)
+                resultWaitBegan = nil
+            } else if let origin = VoiceDelivery.origin(for: session.id) {
                 waitingForVoice = (session.id, origin)
                 resultWaitBegan = nil
             }
@@ -535,16 +521,15 @@ final class KeyboardController: UIInputViewController {
         VoiceDelivery.clearArmedOrigin(armed.launchID)
         if standbyLaunch?.id == armed.launchID { standbyLaunch = nil }
         singleSource = nil
-        _ = startStandbyDictation(in: standby, document: document, refreshUI: false)
+        if startStandbyDictation(in: standby, document: document, refreshUI: false),
+           let starting = startingVoice {
+            autoStartedVoice = (starting.recording, Date())
+        }
     }
 
     private func updateVoiceHandoff() {
         let now = Date()
         let document = currentDocumentID
-        if let start = foregroundStart, start.expires <= now {
-            foregroundStart = nil
-            if !voiceTools.isHidden { voiceHint.text = "请打开 Yah，点「开始跨应用语音输入」，再返回这里。" }
-        }
         if let launch = standbyLaunch, launch.expires <= now {
             VoiceDelivery.clearArmedOrigin(launch.id)
             standbyLaunch = nil
@@ -558,6 +543,28 @@ final class KeyboardController: UIInputViewController {
             _ = notify_post(session.cancelSignal)
         }
         let visibleSession = cancelledSession ? nil : session
+
+        if let auto = autoStartedVoice {
+            let stillActive = visibleSession?.id == auto.recording
+                || startingVoice?.recording == auto.recording
+                || waitingForVoice?.recording == auto.recording
+            if !stillActive || now.timeIntervalSince(auto.startedAt) > 10 {
+                autoStartedVoice = nil
+            } else if let document {
+                let needsRebind = (startingVoice?.recording == auto.recording && startingVoice?.document != document)
+                    || (visibleSession?.id == auto.recording && VoiceDelivery.origin(for: auto.recording) != document)
+                    || (waitingForVoice?.recording == auto.recording && waitingForVoice?.document != document)
+                if needsRebind {
+                    _ = VoiceDelivery.rebind(auto.recording, to: document)
+                    if let starting = startingVoice, starting.recording == auto.recording {
+                        startingVoice = (auto.recording, document, starting.expires)
+                    }
+                    if let waiting = waitingForVoice, waiting.recording == auto.recording {
+                        waitingForVoice = (auto.recording, document)
+                    }
+                }
+            }
+        }
 
         if let retry = retryingVoice {
             if (visibleSession?.id == retry.recording && visibleSession?.transcribing == true) || pending?.recordingID == retry.recording {
@@ -577,7 +584,6 @@ final class KeyboardController: UIInputViewController {
             waitingForVoice = (request, document)
         }
         if let session = visibleSession {
-            foregroundStart = nil
             standbyLaunch = nil
             if let source = singleSource {
                 if now.timeIntervalSince(source.since) < 120, session.started >= source.since.addingTimeInterval(-1) {
@@ -589,12 +595,6 @@ final class KeyboardController: UIInputViewController {
             if let origin = VoiceDelivery.origin(for: session.id) { waitingForVoice = (session.id, origin) }
             resultWaitBegan = nil
             voiceLaunchCheck?.cancel()
-            if !voiceTools.isHidden {
-                voiceTools.isHidden = true
-                typingHeader?.isHidden = false
-                fallbackVoice.isHidden = true
-                updateCandidateToggle()
-            }
         } else if let starting = startingVoice {
             if pending?.recordingID == starting.recording { startingVoice = nil }
             else if let failure = VoiceHandoff.failure(for: starting.recording) {
@@ -647,20 +647,10 @@ final class KeyboardController: UIInputViewController {
         else if let message = voiceMessage, message.document == nil || message.document == document { status = message.text }
         else if visibleSession == nil, resultWaitBegan != nil, waitingForVoice?.document == document { status = "正在等待转写结果…" }
 
-        let recovery = visibleSession == nil ? VoiceHandoff.recovery()?.recording : nil
-        let standbyBadge = standby != nil
-        if recoverableRecording != recovery || voiceLinkStandbyActive != standbyBadge {
-            recoverableRecording = recovery
-            voiceLinkStandbyActive = standbyBadge
-            voiceLink.rootView = makeVoiceLink()
-        }
-        voiceLink.view.isHidden = visibleSession != nil || !voiceTools.isHidden
-        voiceLink.view.isUserInteractionEnabled = startingVoice == nil && retryingVoice == nil && endingStandby == nil
-
         let ownsStarting = startingVoice?.document == document
         let ownsSession = visibleSession.map { VoiceDelivery.origin(for: $0.id) == document } ?? false
         let ownsWaiting = visibleSession == nil && resultWaitBegan != nil && waitingForVoice?.document == document
-        let showVoicePanel = voiceTools.isHidden && document != nil && (ownsStarting || ownsSession || ownsWaiting)
+        let showVoicePanel = document != nil && (ownsStarting || ownsSession || ownsWaiting)
 
         voiceStatus.text = status
         voiceStatus.isHidden = status == nil || showVoicePanel
@@ -669,6 +659,7 @@ final class KeyboardController: UIInputViewController {
 
         if showVoicePanel {
             closeCandidates()
+            closeSettings()
             mainToolbar?.isHidden = true
             rows.isHidden = true
             voicePanel.isHidden = false
@@ -677,51 +668,35 @@ final class KeyboardController: UIInputViewController {
             if let s = visibleSession {
                 let stopping = stoppingVoice?.recording == s.id
                 let capturing = !s.transcribing && !stopping
-                let seconds = max(0, Int(now.timeIntervalSince(s.started)))
-                let title = s.transcribing ? "正在识别并上屏…"
-                    : stopping ? "正在停止…"
-                    : String(format: "正在聆听 %d:%02d", seconds / 60, seconds % 60)
                 let snapshot = capturing ? s.currentPreview : nil
-                voicePanel.render(
-                    title: title,
-                    draft: snapshot?.text,
+                voicePanel.renderDirect(
+                    title: capturing ? "正在聆听，轻触完成" : "正在识别并上屏…",
+                    message: capturing ? (snapshot?.text ?? "") : "",
                     levels: snapshot?.levels ?? [],
-                    isStarting: false,
-                    isStopping: !capturing,
-                    canCancel: capturing,
-                    canStop: capturing,
-                    standbyExpires: standby?.expires,
-                    endingStandby: endingStandby != nil
+                    mode: capturing ? .listening : .finishing,
+                    actionTitle: capturing ? "完成" : nil
                 )
             } else if startingVoice != nil {
-                voicePanel.render(
+                voicePanel.renderDirect(
                     title: "正在准备麦克风…",
-                    draft: nil,
+                    message: "",
                     levels: [],
-                    isStarting: true,
-                    isStopping: false,
-                    canCancel: true,
-                    canStop: false,
-                    standbyExpires: standby?.expires,
-                    endingStandby: endingStandby != nil
+                    mode: .starting,
+                    actionTitle: nil
                 )
             } else {
-                voicePanel.render(
+                voicePanel.renderDirect(
                     title: "正在识别并上屏…",
-                    draft: nil,
+                    message: "",
                     levels: [],
-                    isStarting: false,
-                    isStopping: true,
-                    canCancel: false,
-                    canStop: false,
-                    standbyExpires: standby?.expires,
-                    endingStandby: endingStandby != nil
+                    mode: .finishing,
+                    actionTitle: nil
                 )
             }
         } else {
             voicePanel.isHidden = true
             mainToolbar?.isHidden = false
-            rows.isHidden = !candidatePanel.isHidden
+            rows.isHidden = !candidatePanel.isHidden || !settingsPanel.isHidden
             stopVoice.isHidden = visibleSession == nil
             if let s = visibleSession {
                 let stopping = stoppingVoice?.recording == s.id
@@ -784,10 +759,21 @@ final class KeyboardController: UIInputViewController {
             voiceStateToken = stateToken
         }
         voiceTimer?.invalidate()
-        voiceTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
+        voiceTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.updateVoiceHandoff() }
         }
-        voiceLink.rootView = makeVoiceLink()
+        let sharedDefaults = UserDefaults(suiteName: "group.local.yah.voice")
+        let sharedRevision = sharedDefaults?.integer(forKey: "schemeSelectionRevision") ?? 0
+        if let shared = sharedDefaults?.string(forKey: "scheme"),
+           sharedRevision != UserDefaults.standard.integer(forKey: "keyboardSharedSchemeRevision"),
+           let sharedChoice = Scheme(rawValue: shared),
+           YahRimeSession.configure(), composition.useSchema(shared) {
+            scheme = sharedChoice
+            communityID = nil
+            UserDefaults.standard.removeObject(forKey: "communitySchema")
+            UserDefaults.standard.set(sharedRevision, forKey: "keyboardSharedSchemeRevision")
+            composition.setOutputForm(outputForm)
+        }
         restoreCommunityScheme()
         let previousSpelling = composition.spelling
         if YahRimeSession.refreshPersonalLexicon() {
@@ -807,6 +793,7 @@ final class KeyboardController: UIInputViewController {
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
         isKeyboardVisible = true
+        UserDefaults(suiteName: "group.local.yah.voice")?.set(true, forKey: "yahKeyboardWasActivated")
         updateVoiceHandoff()
     }
 
@@ -823,6 +810,7 @@ final class KeyboardController: UIInputViewController {
         contextualRanking?.clear()
         composition.updateContextualOrder(nil)
         closeCandidates()
+        closeSettings()
         voiceLaunchCheck?.cancel()
         voiceLaunchCheck = nil
         voiceTimer?.invalidate()
@@ -1089,9 +1077,14 @@ final class KeyboardController: UIInputViewController {
         }
         let space = button("", style: .space) { $0.insert(defaultText: " ") }
         space.accessibilityLabel = english ? "space" : "空格"
+        space.accessibilityHint = "长按开始语音转文字"
         let drag = UILongPressGestureRecognizer(target: self, action: #selector(moveCursor(_:)))
         drag.delegate = self
         space.addGestureRecognizer(drag)
+        let voiceHold = UILongPressGestureRecognizer(target: self, action: #selector(spaceVoiceHold(_:)))
+        voiceHold.minimumPressDuration = 0.65
+        voiceHold.delegate = self
+        space.addGestureRecognizer(voiceHold)
         controls.addArrangedSubview(space)
         let language = button(english ? "中" : "英", style: .control) {
             $0.finishComposition()
@@ -1218,6 +1211,10 @@ final class KeyboardController: UIInputViewController {
         guard offset != 0 else { return }
         textDocumentProxy.adjustTextPosition(byCharacterOffset: offset)
         cursorAnchor += CGFloat(offset) * step
+    }
+
+    @objc private func spaceVoiceHold(_ gesture: UILongPressGestureRecognizer) {
+        if gesture.state == .began { openVoice() }
     }
 
     private enum KeyStyle { case letter, control, space, accent, candidate }
@@ -1471,11 +1468,146 @@ final class KeyboardController: UIInputViewController {
         }
     }
 
+    private func refreshSettingsPanel() {
+        let state = KeyboardSettingsPanel.State(
+            schemes: Scheme.allCases.map {
+                .init(id: $0.rawValue, title: $0.title, selected: communityID == nil && $0 == scheme)
+            },
+            communitySchemes: (communityLibrary?.schemes ?? []).map {
+                .init(id: $0.id, title: $0.name, selected: $0.id == communityID)
+            },
+            currentSchemeTitle: schemeTitle,
+            outputForms: (communityID == nil ? RimeOutputForm.allCases : [.simplified, .traditional]).map {
+                .init(id: $0.rawValue, title: $0.title, selected: $0 == effectiveOutputForm)
+            },
+            currentOutputFormTitle: effectiveOutputForm.title,
+            heightLevel: appearance.height.rawValue,
+            fontLevel: appearance.font.rawValue,
+            hapticsEnabled: appearance.haptics,
+            contextualEnabled: contextualRanking != nil,
+            phrases: phrases.entries,
+            canSaveSelection: textDocumentProxy.selectedText?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false,
+            hasStandby: hasFullAccess && VoiceHandoff.standby() != nil,
+            endingStandby: hasFullAccess && VoiceHandoff.standby().map { endingStandby?.id == $0.id } == true,
+            hasUninsertedVoice: currentDocumentID != nil && VoiceDelivery.latestUninserted() != nil
+        )
+        settingsPanel.onSelectScheme = { [weak self] raw in
+            guard let self, let choice = Scheme(rawValue: raw),
+                  YahRimeSession.configure(), composition.useSchema(choice.rawValue) else { return }
+            communityID = nil
+            UserDefaults.standard.removeObject(forKey: "communitySchema")
+            correctionCache.removeAll()
+            edgeTouches.removeAll()
+            scheme = choice
+            english = false
+            symbols = false
+            shifted = false
+            composition.setOutputForm(outputForm)
+            UserDefaults.standard.set(choice.rawValue, forKey: "scheme")
+            let shared = UserDefaults(suiteName: "group.local.yah.voice")
+            shared?.set(choice.rawValue, forKey: "scheme")
+            let revision = (shared?.integer(forKey: "schemeSelectionRevision") ?? 0) + 1
+            shared?.set(revision, forKey: "schemeSelectionRevision")
+            UserDefaults.standard.set(revision, forKey: "keyboardSharedSchemeRevision")
+            rebuild()
+            refresh()
+            refreshSettingsPanel()
+        }
+        settingsPanel.onSelectCommunityScheme = { [weak self] id in
+            guard let self, activateCommunity(id) else { return }
+            rebuild()
+            refresh()
+            refreshSettingsPanel()
+        }
+        settingsPanel.onSelectOutputForm = { [weak self] raw in
+            guard let self, let form = RimeOutputForm(rawValue: raw) else { return }
+            outputForm = form
+            composition.setOutputForm(form)
+            form.save()
+            refresh()
+            refreshSettingsPanel()
+        }
+        settingsPanel.onSetHeight = { [weak self] raw in
+            guard let self, let level = KeyboardAppearance.Level(rawValue: raw) else { return }
+            appearance.height = level
+            appearance.save()
+            updateAppearance()
+            refreshSettingsPanel()
+        }
+        settingsPanel.onSetFont = { [weak self] raw in
+            guard let self, let level = KeyboardAppearance.Level(rawValue: raw) else { return }
+            appearance.font = level
+            appearance.save()
+            updateAppearance()
+            refreshSettingsPanel()
+        }
+        settingsPanel.onToggleHaptics = { [weak self] in
+            guard let self else { return }
+            appearance.haptics.toggle()
+            appearance.save()
+            if appearance.haptics { playKeyFeedback() } else { feedback = nil }
+            refresh()
+            refreshSettingsPanel()
+        }
+        settingsPanel.onResetAppearance = { [weak self] in
+            guard let self else { return }
+            appearance = KeyboardAppearance()
+            appearance.save()
+            feedback = nil
+            updateAppearance()
+            refreshSettingsPanel()
+        }
+        settingsPanel.onToggleContextual = { [weak self] in
+            guard let self else { return }
+            let enabled = contextualRanking == nil
+            UserDefaults.standard.set(enabled, forKey: Self.contextPreference)
+            if enabled { enableContextualRanking() } else { contextualRanking = nil }
+            refresh()
+            refreshSettingsPanel()
+        }
+        settingsPanel.onInsertPhrase = { [weak self] phrase in
+            guard let self else { return }
+            textDocumentProxy.insertText(phrase)
+            closeSettings()
+        }
+        settingsPanel.onSaveSelectionPhrase = { [weak self] in
+            guard let self, let selection = textDocumentProxy.selectedText else { return }
+            phrases.add(selection)
+            refreshSettingsPanel()
+        }
+        settingsPanel.onRemovePhrase = { [weak self] phrase in
+            guard let self else { return }
+            phrases.remove(phrase)
+            refreshSettingsPanel()
+        }
+        settingsPanel.onStartVoice = { [weak self] in
+            guard let self else { return }
+            closeSettings()
+            openVoice()
+        }
+        settingsPanel.onInsertLatestVoice = { [weak self] in
+            guard let self, let document = currentDocumentID, let result = VoiceDelivery.latestUninserted() else { return }
+            let id = result.id, recording = result.recordingID
+            guard currentDocumentID == document,
+                  let item = recording.flatMap(VoiceHandoff.pending(for:)) ?? VoiceHandoff.pending(),
+                  item.id == id else { return }
+            closeSettings()
+            insertPendingVoice(item, explicitlyHere: true)
+        }
+        settingsPanel.onEndStandby = { [weak self] in
+            guard let self else { return }
+            endStandby()
+            refreshSettingsPanel()
+        }
+        settingsPanel.render(state)
+    }
+
     private func refresh() {
         // The expanded panel keeps the order and absolute indices of the rows already on screen.
         if candidatePanel.isHidden { updateContextualOrder() }
-        if composition.spelling.isEmpty { closeCandidates() }
+        if composition.spelling.isEmpty { closeCandidates() } else { closeSettings() }
         updateCandidateToggle()
+        updateSettingsToggle()
         updateReturnTitle()
         let displayed = composition.displaySpelling
         spelling.text = nineKeys ? displayed.map { key in
@@ -1484,90 +1616,7 @@ final class KeyboardController: UIInputViewController {
         }.joined() : displayed
         spelling.isHidden = spelling.text?.isEmpty != false
         suggestions.arrangedSubviews.forEach { $0.removeFromSuperview() }
-        if composition.spelling.isEmpty {
-            let mode = styledButton(schemeTitle + effectiveOutputForm.suffix, style: .candidate)
-            let schemes = Scheme.allCases.map { choice in
-                UIAction(title: choice.title, state: communityID == nil && choice == scheme ? .on : .off) { [weak self] _ in
-                    guard let self, YahRimeSession.configure(), composition.useSchema(choice.rawValue) else { return }
-                    communityID = nil
-                    UserDefaults.standard.removeObject(forKey: "communitySchema")
-                    correctionCache.removeAll()
-                    edgeTouches.removeAll()
-                    scheme = choice
-                    english = false
-                    symbols = false
-                    shifted = false
-                    composition.setOutputForm(outputForm)
-                    UserDefaults.standard.set(choice.rawValue, forKey: "scheme")
-                    rebuild()
-                    refresh()
-                }
-            }
-            let forms: [RimeOutputForm] = communityID == nil ? RimeOutputForm.allCases : [.simplified, .traditional]
-            let convert = UIMenu(title: "输出字形", children: forms.map { form in
-                UIAction(title: form.title, state: form == effectiveOutputForm ? .on : .off) { [weak self] _ in
-                    guard let self else { return }
-                    outputForm = form
-                    composition.setOutputForm(form)
-                    form.save()
-                    refresh()
-                }
-            })
-            var actions: [UIMenuElement] = schemes
-            if let library = communityLibrary {
-                let imported = library.schemes.map { entry in
-                    UIAction(title: entry.name, state: entry.id == communityID ? .on : .off) { [weak self] _ in
-                        guard let self, activateCommunity(entry.id) else { return }
-                        rebuild()
-                        refresh()
-                    }
-                }
-                actions.append(UIMenu(title: "社区方案", options: .displayInline, children: imported))
-            }
-            let tools = UIAction(title: "语音工具", image: UIImage(systemName: "mic")) { [weak self] _ in
-                self?.fallbackVoice.sendActions(for: .touchUpInside)
-            }
-            let contextual = UIAction(title: "按上文选词", state: contextualRanking == nil ? .off : .on) {
-                [weak self] _ in
-                guard let self else { return }
-                let enabled = contextualRanking == nil
-                UserDefaults.standard.set(enabled, forKey: Self.contextPreference)
-                if enabled { enableContextualRanking() }
-                else { contextualRanking = nil }
-                refresh()
-            }
-            contextual.subtitle = "简体全拼 · 本机处理"
-            let voiceActions = UIDeferredMenuElement.uncached { [weak self] complete in
-                guard let self else { complete([]); return }
-                var items: [UIMenuElement] = []
-                if let document = currentDocumentID, let result = VoiceDelivery.latestUninserted() {
-                    let id = result.id, recording = result.recordingID
-                    let insert = UIAction(title: "插入上段听写", image: UIImage(systemName: "text.badge.plus")) { [weak self] _ in
-                        guard let self, currentDocumentID == document,
-                              let item = recording.flatMap(VoiceHandoff.pending(for:)) ?? VoiceHandoff.pending(),
-                              item.id == id else { return }
-                        insertPendingVoice(item, explicitlyHere: true)
-                    }
-                    insert.subtitle = "插入到当前输入框"
-                    items.append(insert)
-                }
-                if hasFullAccess, let standby = VoiceHandoff.standby() {
-                    let pending = endingStandby?.id == standby.id
-                    items.append(UIAction(title: pending ? "正在结束连续听写…" : "结束连续听写",
-                                          attributes: pending ? .disabled : []) { [weak self] _ in self?.endStandby() })
-                }
-                complete(items)
-            }
-            let more = UIMenu(title: "更多", image: UIImage(systemName: "ellipsis.circle"),
-                              children: [phraseMenu(), appearanceMenu(), contextual])
-            mode.menu = UIMenu(children: [voiceActions] + actions + [convert, more, tools])
-            mode.showsMenuAsPrimaryAction = true
-            mode.configuration?.image = UIImage(systemName: "chevron.down")
-            mode.configuration?.imagePlacement = .trailing
-            mode.configuration?.imagePadding = 4
-            mode.configuration?.preferredSymbolConfigurationForImage = .init(pointSize: 11, weight: .semibold)
-            suggestions.addArrangedSubview(mode)
-        }
+        if !settingsPanel.isHidden { refreshSettingsPanel() }
         if composition.canPage(backward: true) {
             let previous = button("‹") { $0.composition.page(backward: true) }
             previous.accessibilityLabel = "上一页候选"
@@ -1632,9 +1681,9 @@ private final class KeyboardRecordingPreview: UIControl {
         draft.text = canReveal ? "查看草稿" : String(trimmed.suffix(32))
         draft.textColor = canReveal ? .link : .label
         draft.isHidden = !canReveal && trimmed.isEmpty
-        // At accessibility text sizes, the draft takes the row. VoiceOver still reads the time and level.
         elapsed.superview?.isHidden = !draft.isHidden && traitCollection.preferredContentSizeCategory.isAccessibilityCategory
         elapsed.text = time
+        meter.isListening = true
         meter.show(levels, reduceMotion: UIAccessibility.isReduceMotionEnabled)
         isUserInteractionEnabled = canReveal
         accessibilityTraits = canReveal ? [.button] : [.staticText]
@@ -1651,27 +1700,39 @@ private final class KeyboardRecordingPreview: UIControl {
         elapsed.text = nil
         accessibilityValue = nil
         accessibilityHint = nil
+        meter.isListening = false
         meter.show([], reduceMotion: true)
     }
 }
 
 private final class KeyboardLevelMeter: UIView {
-    private var levels: [Float] = []
+    private var targetLevels: [Float] = []
+    private var displayLevels: [CGFloat] = Array(repeating: 0, count: 21)
     private var reduceMotion = false
-    var barColor: UIColor = .label
-    var minimumBarHeight: CGFloat = 2
+    private var displayLink: CADisplayLink?
+    private var phase: CGFloat = 0
+    var barColor: UIColor = .systemBlue
+    var minimumBarHeight: CGFloat = 4
     var showIdleBars = false
+    var isListening = false {
+        didSet { updateDisplayLink() }
+    }
     var levelDescription: String {
-        guard let level = levels.last else { return "尚无音量数据" }
+        guard let level = targetLevels.last else { return "尚无音量数据" }
         if level < 0.05 { return "安静" }
         return level < 0.5 ? "音量较低" : "音量较高"
     }
 
     func show(_ samples: [Float], reduceMotion: Bool) {
-        guard levels != samples || self.reduceMotion != reduceMotion else { return }
-        levels = samples
         self.reduceMotion = reduceMotion
-        setNeedsDisplay()
+        targetLevels = samples
+        if reduceMotion || !isListening {
+            syncDisplayLevelsImmediately()
+            setNeedsDisplay()
+        } else {
+            updateDisplayLink()
+            setNeedsDisplay()
+        }
     }
 
     override init(frame: CGRect) {
@@ -1683,14 +1744,81 @@ private final class KeyboardLevelMeter: UIView {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
+    deinit {
+        displayLink?.invalidate()
+    }
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        updateDisplayLink()
+    }
+
+    override var isHidden: Bool {
+        didSet { updateDisplayLink() }
+    }
+
+    private func updateDisplayLink() {
+        let shouldRun = window != nil && !isHidden && isListening && !reduceMotion
+        if shouldRun {
+            if displayLink == nil {
+                let link = CADisplayLink(target: self, selector: #selector(stepAnimation))
+                link.preferredFrameRateRange = CAFrameRateRange(minimum: 30, maximum: 60, preferred: 60)
+                link.add(to: .main, forMode: .common)
+                displayLink = link
+            }
+        } else {
+            displayLink?.invalidate()
+            displayLink = nil
+        }
+    }
+
+    private func sampledTargets(count: Int) -> [CGFloat] {
+        guard !targetLevels.isEmpty else {
+            return Array(repeating: 0, count: count)
+        }
+        let recent = Array(targetLevels.suffix(12))
+        let mid = CGFloat(count - 1) / 2
+        return (0..<count).map { index in
+            let distance = abs(CGFloat(index) - mid) / max(1, mid)
+            let sampleIndex = min(recent.count - 1, max(0, Int((1 - distance) * CGFloat(recent.count - 1))))
+            let raw = CGFloat(recent[sampleIndex])
+            let envelope = 0.45 + 0.55 * cos(distance * .pi * 0.5)
+            return min(1, max(0, raw * envelope))
+        }
+    }
+
+    private func syncDisplayLevelsImmediately() {
+        let targets = sampledTargets(count: displayLevels.count)
+        displayLevels = targets
+    }
+
+    @objc private func stepAnimation() {
+        phase += 0.10
+        let count = displayLevels.count
+        let targets = sampledTargets(count: count)
+        let peak = targetLevels.suffix(4).max() ?? 0
+        let mid = CGFloat(count - 1) / 2
+        for i in 0..<count {
+            let distance = abs(CGFloat(i) - mid) / max(1, mid)
+            let envelope = 0.4 + 0.6 * cos(distance * .pi * 0.5)
+            // Subtle organic breathing when quiet, lively response when speaking.
+            let breath = (0.08 + 0.06 * sin(phase + CGFloat(i) * 0.45)) * envelope
+            let activeWave = peak > 0.03 ? (0.08 * sin(phase * 2.1 + CGFloat(i) * 0.7) * CGFloat(peak) * envelope) : 0
+            let desired = min(1, max(breath, targets[i] + activeWave))
+            let smoothing: CGFloat = desired > displayLevels[i] ? 0.34 : 0.18
+            displayLevels[i] += (desired - displayLevels[i]) * smoothing
+        }
+        setNeedsDisplay()
+    }
+
     override func draw(_ rect: CGRect) {
         let mid = bounds.midY
-        if levels.isEmpty {
+        if targetLevels.isEmpty && !isListening {
             if showIdleBars {
-                barColor.withAlphaComponent(0.28).setFill()
-                let count = 16
+                barColor.withAlphaComponent(0.22).setFill()
+                let count = displayLevels.count
                 let slot = bounds.width / CGFloat(count)
-                let width = min(4.5, max(1.5, slot - 3))
+                let width = min(3.5, max(2, slot * 0.42))
                 for index in 0..<count {
                     let h = minimumBarHeight
                     let x = (CGFloat(index) + 0.5) * slot - width / 2
@@ -1702,41 +1830,57 @@ private final class KeyboardLevelMeter: UIView {
             }
             return
         }
-        barColor.setFill()
         if reduceMotion {
-            let band = (CGFloat(levels.last ?? 0) * 4).rounded() / 4
-            UIBezierPath(roundedRect: CGRect(x: 0, y: mid - 2, width: bounds.width * band, height: 4), cornerRadius: 2).fill()
-        } else {
-            let slot = bounds.width / 16
-            for (index, level) in levels.suffix(16).reversed().enumerated() {
-                let height = max(minimumBarHeight, CGFloat(level) * bounds.height)
-                let width = min(4.5, max(1, slot - 1.5))
-                let x = bounds.maxX - (CGFloat(index) + 0.5) * slot - width / 2
-                UIBezierPath(roundedRect: CGRect(x: x, y: mid - height / 2, width: width, height: height), cornerRadius: width / 2).fill()
-            }
+            let band = max(0.12, (CGFloat(targetLevels.last ?? 0) * 4).rounded() / 4)
+            barColor.setFill()
+            UIBezierPath(roundedRect: CGRect(x: 0, y: mid - 2.5, width: bounds.width * band, height: 5), cornerRadius: 2.5).fill()
+            return
+        }
+        let count = displayLevels.count
+        let slot = bounds.width / CGFloat(count)
+        let width = min(3.5, max(2, slot * 0.42))
+        let maxHeight = max(minimumBarHeight, bounds.height - 4)
+        for index in 0..<count {
+            let level = displayLevels[index]
+            let height = max(minimumBarHeight, minimumBarHeight + level * (maxHeight - minimumBarHeight))
+            let alpha = 0.35 + 0.65 * min(1, level * 1.4)
+            barColor.withAlphaComponent(alpha).setFill()
+            let x = (CGFloat(index) + 0.5) * slot - width / 2
+            UIBezierPath(roundedRect: CGRect(x: x, y: mid - height / 2, width: width, height: height), cornerRadius: width / 2).fill()
         }
     }
 }
 
-private final class KeyboardVoicePanel: UIView {
+private final class KeyboardVoicePanel: UIView, UIGestureRecognizerDelegate {
+    enum DirectMode: Equatable { case permissions, starting, listening, finishing, failed }
     var onCancel: (() -> Void)?
     var onStop: (() -> Void)?
     var onEndStandby: (() -> Void)?
+    var onPanelTap: (() -> Void)?
+    var onPrimaryAction: (() -> Void)?
+    var onAuthorize: (() -> Void)?
 
     private let dotView = UIView()
     private let statusLabel = UILabel()
+    private let headerSpacer = UIView()
     private let standbyLabel = UILabel()
     private let endStandbyButton = UIButton(type: .system)
     private let draftLabel = UILabel()
     private let meter = KeyboardLevelMeter()
     private let cancelButton = UIButton(type: .system)
     private let stopButton = UIButton(type: .system)
+    private let permissionMessage = UILabel()
+    private let permissionButton = UIButton(type: .system)
+    private let permissionCancelButton = UIButton(type: .system)
+    private let settingsContainer = UIView()
+    private var directMode: DirectMode?
 
     override init(frame: CGRect) {
         super.init(frame: frame)
         let card = UIView()
-        card.backgroundColor = UIColor { $0.userInterfaceStyle == .dark ? UIColor(white: 0.20, alpha: 1) : .white }
-        card.layer.cornerRadius = 14
+        card.backgroundColor = UIColor { $0.userInterfaceStyle == .dark ? UIColor(white: 0.17, alpha: 1) : UIColor(white: 0.97, alpha: 1) }
+        card.layer.cornerRadius = 16
+        card.layer.cornerCurve = .continuous
         card.translatesAutoresizingMaskIntoConstraints = false
         addSubview(card)
 
@@ -1749,7 +1893,7 @@ private final class KeyboardVoicePanel: UIView {
 
         statusLabel.font = .preferredFont(forTextStyle: .subheadline).withWeight(.semibold)
         statusLabel.adjustsFontForContentSizeCategory = true
-        statusLabel.textColor = .label
+        statusLabel.textColor = .secondaryLabel
         statusLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
 
         standbyLabel.font = .monospacedDigitSystemFont(ofSize: UIFont.preferredFont(forTextStyle: .caption1).pointSize, weight: .medium)
@@ -1761,22 +1905,21 @@ private final class KeyboardVoicePanel: UIView {
         endStandbyButton.accessibilityIdentifier = "voice-panel-end-standby"
         endStandbyButton.addAction(UIAction { [weak self] _ in self?.onEndStandby?() }, for: .touchUpInside)
 
-        let spacer = UIView()
-        let header = UIStackView(arrangedSubviews: [dotView, statusLabel, spacer, standbyLabel, endStandbyButton])
+        let header = UIStackView(arrangedSubviews: [dotView, statusLabel, headerSpacer, standbyLabel, endStandbyButton])
         header.spacing = 6
         header.alignment = .center
 
         draftLabel.font = .preferredFont(forTextStyle: .body)
         draftLabel.adjustsFontForContentSizeCategory = true
-        draftLabel.numberOfLines = 3
+        draftLabel.numberOfLines = 2
         draftLabel.lineBreakMode = .byTruncatingHead
         draftLabel.textAlignment = .center
 
-        meter.barColor = .systemOrange
-        meter.minimumBarHeight = 4
+        meter.barColor = .systemBlue
+        meter.minimumBarHeight = 5
         meter.showIdleBars = true
         meter.translatesAutoresizingMaskIntoConstraints = false
-        meter.heightAnchor.constraint(equalToConstant: 32).isActive = true
+        meter.heightAnchor.constraint(equalToConstant: 44).isActive = true
 
         let body = UIStackView(arrangedSubviews: [draftLabel, meter])
         body.axis = .vertical
@@ -1786,9 +1929,9 @@ private final class KeyboardVoicePanel: UIView {
         var cancelConfig = UIButton.Configuration.filled()
         cancelConfig.title = "取消"
         cancelConfig.image = UIImage(systemName: "xmark")
-        cancelConfig.imagePadding = 5
+        cancelConfig.imagePadding = 6
         cancelConfig.cornerStyle = .capsule
-        cancelConfig.baseBackgroundColor = UIColor { $0.userInterfaceStyle == .dark ? UIColor(white: 0.30, alpha: 1) : .systemGray5 }
+        cancelConfig.baseBackgroundColor = UIColor { $0.userInterfaceStyle == .dark ? UIColor(white: 0.27, alpha: 1) : .systemGray5 }
         cancelConfig.baseForegroundColor = .label
         cancelButton.configuration = cancelConfig
         cancelButton.accessibilityLabel = "取消录音"
@@ -1796,31 +1939,59 @@ private final class KeyboardVoicePanel: UIView {
         cancelButton.addAction(UIAction { [weak self] _ in self?.onCancel?() }, for: .touchUpInside)
 
         var stopConfig = UIButton.Configuration.filled()
-        stopConfig.title = "完成上屏"
-        stopConfig.image = UIImage(systemName: "stop.fill")
+        stopConfig.title = "完成"
+        stopConfig.image = UIImage(systemName: "checkmark")
         stopConfig.imagePadding = 6
         stopConfig.cornerStyle = .capsule
-        stopConfig.baseBackgroundColor = .systemOrange
+        stopConfig.baseBackgroundColor = .systemBlue
         stopConfig.baseForegroundColor = .white
         stopButton.configuration = stopConfig
         stopButton.accessibilityLabel = "停止录音并输入"
         stopButton.accessibilityIdentifier = "voice-panel-stop"
-        stopButton.addAction(UIAction { [weak self] _ in self?.onStop?() }, for: .touchUpInside)
+        stopButton.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            if directMode == .listening || directMode == .finishing { onPrimaryAction?() }
+            else { onStop?() }
+        }, for: .touchUpInside)
+
+        permissionMessage.font = .preferredFont(forTextStyle: .body)
+        permissionMessage.adjustsFontForContentSizeCategory = true
+        permissionMessage.textColor = .secondaryLabel
+        permissionMessage.numberOfLines = 0
+        permissionMessage.textAlignment = .center
+        permissionButton.setTitle("立即开启", for: .normal)
+        permissionButton.accessibilityIdentifier = "voice-permission-authorize"
+        permissionButton.addAction(UIAction { [weak self] _ in self?.onAuthorize?() }, for: .touchUpInside)
+        settingsContainer.heightAnchor.constraint(equalToConstant: 36).isActive = true
 
         let actions = UIStackView(arrangedSubviews: [cancelButton, stopButton])
-        actions.spacing = 10
+        actions.spacing = 12
+        actions.distribution = .fillEqually
         actions.translatesAutoresizingMaskIntoConstraints = false
+        actions.heightAnchor.constraint(equalToConstant: 42).isActive = true
+        permissionCancelButton.setTitle("取消", for: .normal)
+        permissionCancelButton.addAction(UIAction { [weak self] _ in self?.onCancel?() }, for: .touchUpInside)
+        let permissionActions = UIStackView(arrangedSubviews: [permissionCancelButton, permissionButton])
+        permissionActions.spacing = 10
+        permissionActions.distribution = .fillEqually
+        permissionActions.translatesAutoresizingMaskIntoConstraints = false
+        permissionButton.setContentHuggingPriority(.required, for: .horizontal)
         NSLayoutConstraint.activate([
-            actions.heightAnchor.constraint(equalToConstant: 44),
-            stopButton.widthAnchor.constraint(equalTo: cancelButton.widthAnchor, multiplier: 1.7)
+            permissionActions.heightAnchor.constraint(equalToConstant: 42),
+            permissionMessage.heightAnchor.constraint(greaterThanOrEqualToConstant: 48)
         ])
+        let permissionContent = UIStackView(arrangedSubviews: [permissionMessage, permissionActions, settingsContainer])
+        permissionContent.axis = .vertical
+        permissionContent.spacing = 8
+        permissionContent.alignment = .center
+        permissionContent.translatesAutoresizingMaskIntoConstraints = false
 
         let topSpacer = UIView()
         let bottomSpacer = UIView()
         topSpacer.setContentHuggingPriority(UILayoutPriority(1), for: .vertical)
         bottomSpacer.setContentHuggingPriority(UILayoutPriority(1), for: .vertical)
 
-        let content = UIStackView(arrangedSubviews: [header, topSpacer, body, bottomSpacer, actions])
+        let content = UIStackView(arrangedSubviews: [header, topSpacer, body, bottomSpacer, actions, permissionContent])
         content.axis = .vertical
         content.spacing = 8
         content.translatesAutoresizingMaskIntoConstraints = false
@@ -1832,54 +2003,489 @@ private final class KeyboardVoicePanel: UIView {
             card.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -6),
             card.topAnchor.constraint(equalTo: topAnchor, constant: 6),
             card.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -6),
-            content.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 14),
-            content.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -14),
-            content.topAnchor.constraint(equalTo: card.topAnchor, constant: 12),
-            content.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -12)
+            content.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 16),
+            content.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -16),
+            content.topAnchor.constraint(equalTo: card.topAnchor, constant: 14),
+            content.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -14)
         ])
+        permissionContent.isHidden = true
+        permissionActions.widthAnchor.constraint(equalTo: content.widthAnchor).isActive = true
+        permissionMessage.widthAnchor.constraint(equalTo: content.widthAnchor).isActive = true
+        settingsContainer.widthAnchor.constraint(equalTo: content.widthAnchor).isActive = true
+        let tap = UITapGestureRecognizer(target: self, action: #selector(handlePanelTap))
+        tap.cancelsTouchesInView = false
+        tap.delegate = self
+        addGestureRecognizer(tap)
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    func render(title: String, draft: String?, levels: [Float],
-                isStarting: Bool, isStopping: Bool, canCancel: Bool, canStop: Bool,
-                standbyExpires: Date?, endingStandby: Bool) {
+    func setSettingsView(_ settingsView: UIView) {
+        settingsView.translatesAutoresizingMaskIntoConstraints = false
+        settingsContainer.addSubview(settingsView)
+        NSLayoutConstraint.activate([
+            settingsView.leadingAnchor.constraint(equalTo: settingsContainer.leadingAnchor),
+            settingsView.trailingAnchor.constraint(equalTo: settingsContainer.trailingAnchor),
+            settingsView.topAnchor.constraint(equalTo: settingsContainer.topAnchor),
+            settingsView.bottomAnchor.constraint(equalTo: settingsContainer.bottomAnchor)
+        ])
+    }
+
+    func renderDirect(title: String, message: String, levels: [Float], mode: DirectMode, actionTitle: String?) {
+        directMode = mode
         statusLabel.text = title
-        dotView.backgroundColor = isStopping ? .systemGray : (isStarting ? .systemOrange : .systemRed)
-
-        let trimmed = draft?.replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        if !trimmed.isEmpty {
-            draftLabel.text = trimmed
-            draftLabel.textColor = .label
-        } else if isStarting {
-            draftLabel.text = "正在准备麦克风，请稍候…"
-            draftLabel.textColor = .secondaryLabel
-        } else if isStopping {
-            draftLabel.text = "正在识别语音并自动上屏…"
-            draftLabel.textColor = .secondaryLabel
-        } else {
-            draftLabel.text = "请说话，说完点下方完成上屏"
-            draftLabel.textColor = .secondaryLabel
-        }
-
+        statusLabel.textAlignment = .center
+        dotView.isHidden = true
+        headerSpacer.isHidden = true
+        standbyLabel.isHidden = true
+        endStandbyButton.isHidden = true
+        let trimmed = message.replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+        draftLabel.text = trimmed
+        draftLabel.isHidden = trimmed.isEmpty
+        draftLabel.textColor = mode == .failed ? .secondaryLabel : .label
+        meter.isListening = (mode == .listening || mode == .starting)
+        meter.barColor = mode == .failed ? .systemGray : .systemBlue
         meter.show(levels, reduceMotion: UIAccessibility.isReduceMotionEnabled)
 
-        if let standbyExpires {
-            let remaining = max(0, Int(ceil(standbyExpires.timeIntervalSinceNow)))
-            standbyLabel.text = String(format: "待机 %d:%02d", remaining / 60, remaining % 60)
-            standbyLabel.isHidden = false
-            endStandbyButton.isHidden = false
-            endStandbyButton.isEnabled = !endingStandby
-        } else {
-            standbyLabel.isHidden = true
-            endStandbyButton.isHidden = true
+        let permissionContent = permissionMessage.superview
+        permissionContent?.isHidden = mode != .permissions && mode != .failed
+        permissionMessage.text = message
+        permissionButton.isHidden = mode != .permissions
+        settingsContainer.isHidden = mode != .failed
+        permissionCancelButton.superview?.isHidden = false
+        if let actions = cancelButton.superview {
+            actions.isHidden = mode != .listening && mode != .starting && mode != .finishing
         }
+        cancelButton.isHidden = false
+        cancelButton.isEnabled = mode == .listening || mode == .starting
+        stopButton.isHidden = mode == .starting
+        var stopConfig = UIButton.Configuration.filled()
+        stopConfig.title = mode == .finishing ? "识别中…" : (actionTitle ?? "完成")
+        stopConfig.image = mode == .finishing ? nil : UIImage(systemName: "checkmark")
+        stopConfig.imagePadding = 6
+        stopConfig.cornerStyle = .capsule
+        stopConfig.baseBackgroundColor = mode == .finishing ? .systemGray3 : .systemBlue
+        stopConfig.baseForegroundColor = .white
+        stopButton.configuration = stopConfig
+        stopButton.accessibilityLabel = "结束语音并\(actionTitle ?? "完成")"
+        stopButton.isEnabled = mode == .listening
+        permissionButton.isEnabled = mode == .permissions
+    }
 
-        cancelButton.isEnabled = canCancel
-        stopButton.isEnabled = canStop
-        stopButton.configuration?.title = isStopping ? "正在转写…" : "完成上屏"
-        stopButton.configuration?.image = isStopping ? nil : UIImage(systemName: "stop.fill")
-        stopButton.configuration?.baseBackgroundColor = isStopping ? .systemGray : .systemOrange
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+        guard directMode == .listening else { return false }
+        var touchedView = touch.view
+        while let current = touchedView {
+            if current is UIButton { return false }
+            if current === self { break }
+            touchedView = current.superview
+        }
+        return true
+    }
+
+    @objc private func handlePanelTap() {
+        guard directMode == .listening else { return }
+        onPanelTap?()
+    }
+}
+
+private final class KeyboardSettingsPanel: UIView {
+    struct Option {
+        let id: String
+        let title: String
+        let selected: Bool
+    }
+    struct State {
+        let schemes: [Option]
+        let communitySchemes: [Option]
+        let currentSchemeTitle: String
+        let outputForms: [Option]
+        let currentOutputFormTitle: String
+        let heightLevel: Int
+        let fontLevel: Int
+        let hapticsEnabled: Bool
+        let contextualEnabled: Bool
+        let phrases: [String]
+        let canSaveSelection: Bool
+        let hasStandby: Bool
+        let endingStandby: Bool
+        let hasUninsertedVoice: Bool
+    }
+    private enum Page: Equatable {
+        case root, schemes, outputForm, appearance, phrases, voice
+        var title: String {
+            switch self {
+            case .root: return "设置"
+            case .schemes: return "输入方案"
+            case .outputForm: return "输出字形"
+            case .appearance: return "外观与触感"
+            case .phrases: return "快捷短语"
+            case .voice: return "语音工具"
+            }
+        }
+    }
+
+    var onClose: (() -> Void)?
+    var onSelectScheme: ((String) -> Void)?
+    var onSelectCommunityScheme: ((String) -> Void)?
+    var onSelectOutputForm: ((String) -> Void)?
+    var onSetHeight: ((Int) -> Void)?
+    var onSetFont: ((Int) -> Void)?
+    var onToggleHaptics: (() -> Void)?
+    var onResetAppearance: (() -> Void)?
+    var onToggleContextual: (() -> Void)?
+    var onInsertPhrase: ((String) -> Void)?
+    var onSaveSelectionPhrase: (() -> Void)?
+    var onRemovePhrase: ((String) -> Void)?
+    var onStartVoice: (() -> Void)?
+    var onInsertLatestVoice: (() -> Void)?
+    var onEndStandby: (() -> Void)?
+
+    private var page: Page = .root
+    private var lastState: State?
+
+    private let navBar = UIStackView()
+    private let backButton = UIButton(type: .system)
+    private let titleLabel = UILabel()
+    private let closeButton = UIButton(type: .system)
+    private let scrollView = UIScrollView()
+    private let contentStack = UIStackView()
+
+    private static let tileColor = UIColor { $0.userInterfaceStyle == .dark ? UIColor(white: 0.24, alpha: 1) : .white }
+    private static let activeTileColor = UIColor { $0.userInterfaceStyle == .dark ? UIColor.systemBlue.withAlphaComponent(0.28) : UIColor.systemBlue.withAlphaComponent(0.12) }
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        let rootStack = UIStackView()
+        rootStack.axis = .vertical
+        rootStack.spacing = 6
+        rootStack.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(rootStack)
+        NSLayoutConstraint.activate([
+            rootStack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 6),
+            rootStack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -6),
+            rootStack.topAnchor.constraint(equalTo: topAnchor, constant: 4),
+            rootStack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -4)
+        ])
+
+        var backConfig = UIButton.Configuration.plain()
+        backConfig.title = "返回"
+        backConfig.image = UIImage(systemName: "chevron.left", withConfiguration: UIImage.SymbolConfiguration(pointSize: 13, weight: .semibold))
+        backConfig.imagePadding = 3
+        backConfig.contentInsets = NSDirectionalEdgeInsets(top: 4, leading: 4, bottom: 4, trailing: 8)
+        backButton.configuration = backConfig
+        backButton.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            page = .root
+            if let lastState { render(lastState) }
+        }, for: .touchUpInside)
+
+        titleLabel.font = .preferredFont(forTextStyle: .subheadline).withWeight(.semibold)
+        titleLabel.textAlignment = .center
+        titleLabel.textColor = .label
+
+        var closeConfig = UIButton.Configuration.plain()
+        closeConfig.title = "完成"
+        closeConfig.contentInsets = NSDirectionalEdgeInsets(top: 4, leading: 8, bottom: 4, trailing: 4)
+        closeButton.configuration = closeConfig
+        closeButton.addAction(UIAction { [weak self] _ in self?.onClose?() }, for: .touchUpInside)
+
+        navBar.alignment = .center
+        navBar.addArrangedSubview(backButton)
+        navBar.addArrangedSubview(titleLabel)
+        navBar.addArrangedSubview(closeButton)
+        navBar.heightAnchor.constraint(equalToConstant: 32).isActive = true
+        backButton.setContentHuggingPriority(.required, for: .horizontal)
+        closeButton.setContentHuggingPriority(.required, for: .horizontal)
+        rootStack.addArrangedSubview(navBar)
+
+        scrollView.showsVerticalScrollIndicator = false
+        scrollView.contentInsetAdjustmentBehavior = .never
+        contentStack.axis = .vertical
+        contentStack.spacing = 8
+        contentStack.translatesAutoresizingMaskIntoConstraints = false
+        scrollView.addSubview(contentStack)
+        NSLayoutConstraint.activate([
+            contentStack.leadingAnchor.constraint(equalTo: scrollView.contentLayoutGuide.leadingAnchor),
+            contentStack.trailingAnchor.constraint(equalTo: scrollView.contentLayoutGuide.trailingAnchor),
+            contentStack.topAnchor.constraint(equalTo: scrollView.contentLayoutGuide.topAnchor),
+            contentStack.bottomAnchor.constraint(equalTo: scrollView.contentLayoutGuide.bottomAnchor),
+            contentStack.widthAnchor.constraint(equalTo: scrollView.frameLayoutGuide.widthAnchor)
+        ])
+        rootStack.addArrangedSubview(scrollView)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    func resetToRoot() {
+        page = .root
+    }
+
+    func render(_ state: State) {
+        lastState = state
+        navBar.isHidden = (page == .root)
+        titleLabel.text = page.title
+        contentStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        scrollView.setContentOffset(.zero, animated: false)
+
+        switch page {
+        case .root:
+            renderRoot(state)
+        case .schemes:
+            renderSchemes(state)
+        case .outputForm:
+            renderOutputForms(state)
+        case .appearance:
+            renderAppearance(state)
+        case .phrases:
+            renderPhrases(state)
+        case .voice:
+            renderVoice(state)
+        }
+    }
+
+    private func renderRoot(_ state: State) {
+        let row1 = UIStackView(arrangedSubviews: [
+            makeTile(icon: "keyboard", title: "输入方案", subtitle: state.currentSchemeTitle, active: false) { [weak self] in
+                self?.navigate(to: .schemes)
+            },
+            makeTile(icon: "character.book.closed", title: "输出字形", subtitle: state.currentOutputFormTitle, active: false) { [weak self] in
+                self?.navigate(to: .outputForm)
+            },
+            makeTile(icon: "slider.horizontal.3", title: "外观与触感", subtitle: "高度 · 字号", active: false) { [weak self] in
+                self?.navigate(to: .appearance)
+            }
+        ])
+        row1.distribution = .fillEqually
+        row1.spacing = 8
+        row1.heightAnchor.constraint(equalToConstant: 82).isActive = true
+
+        let row2 = UIStackView(arrangedSubviews: [
+            makeTile(icon: "text.quote", title: "快捷短语", subtitle: state.phrases.isEmpty ? "暂无" : "\(state.phrases.count) 条", active: false) { [weak self] in
+                self?.navigate(to: .phrases)
+            },
+            makeTile(icon: "sparkles", title: "按上文选词", subtitle: state.contextualEnabled ? "已开启" : "已关闭", active: state.contextualEnabled) { [weak self] in
+                self?.onToggleContextual?()
+            },
+            makeTile(icon: "mic.fill", title: "语音工具", subtitle: state.hasStandby ? "待机中" : "语音输入", active: state.hasStandby) { [weak self] in
+                guard let self else { return }
+                if state.hasStandby || state.hasUninsertedVoice {
+                    navigate(to: .voice)
+                } else {
+                    onStartVoice?()
+                }
+            }
+        ])
+        row2.distribution = .fillEqually
+        row2.spacing = 8
+        row2.heightAnchor.constraint(equalToConstant: 82).isActive = true
+
+        contentStack.addArrangedSubview(row1)
+        contentStack.addArrangedSubview(row2)
+    }
+
+    private func renderSchemes(_ state: State) {
+        addOptionGrid(state.schemes) { [weak self] id in self?.onSelectScheme?(id) }
+        if !state.communitySchemes.isEmpty {
+            let label = UILabel()
+            label.text = "社区方案"
+            label.font = .preferredFont(forTextStyle: .caption1).withWeight(.medium)
+            label.textColor = .secondaryLabel
+            contentStack.addArrangedSubview(label)
+            addOptionGrid(state.communitySchemes) { [weak self] id in self?.onSelectCommunityScheme?(id) }
+        }
+    }
+
+    private func renderOutputForms(_ state: State) {
+        addOptionGrid(state.outputForms) { [weak self] id in self?.onSelectOutputForm?(id) }
+    }
+
+    private func renderAppearance(_ state: State) {
+        contentStack.addArrangedSubview(makeSegmentedRow(
+            title: "键盘高度",
+            items: [("紧凑", -1), ("标准", 0), ("加高", 1)],
+            selected: state.heightLevel
+        ) { [weak self] value in self?.onSetHeight?(value) })
+
+        contentStack.addArrangedSubview(makeSegmentedRow(
+            title: "按键字号",
+            items: [("小号", -1), ("标准", 0), ("大号", 1)],
+            selected: state.fontLevel
+        ) { [weak self] value in self?.onSetFont?(value) })
+
+        let bottomRow = UIStackView(arrangedSubviews: [
+            makeActionChip(title: state.hapticsEnabled ? "按键触感：开" : "按键触感：关",
+                           icon: "hand.tap",
+                           active: state.hapticsEnabled) { [weak self] in self?.onToggleHaptics?() },
+            makeActionChip(title: "恢复默认", icon: "arrow.counterclockwise", active: false) { [weak self] in
+                self?.onResetAppearance?()
+            }
+        ])
+        bottomRow.distribution = .fillEqually
+        bottomRow.spacing = 8
+        bottomRow.heightAnchor.constraint(equalToConstant: 40).isActive = true
+        contentStack.addArrangedSubview(bottomRow)
+    }
+
+    private func renderPhrases(_ state: State) {
+        let saveButton = makeActionChip(
+            title: state.canSaveSelection ? "收藏当前选中文字" : "先选中文字即可收藏",
+            icon: "plus.circle",
+            active: state.canSaveSelection
+        ) { [weak self] in self?.onSaveSelectionPhrase?() }
+        saveButton.isEnabled = state.canSaveSelection
+        saveButton.heightAnchor.constraint(equalToConstant: 38).isActive = true
+        contentStack.addArrangedSubview(saveButton)
+
+        if state.phrases.isEmpty {
+            let empty = UILabel()
+            empty.text = "暂无收藏短语"
+            empty.font = .preferredFont(forTextStyle: .footnote)
+            empty.textColor = .secondaryLabel
+            empty.textAlignment = .center
+            empty.heightAnchor.constraint(equalToConstant: 44).isActive = true
+            contentStack.addArrangedSubview(empty)
+        } else {
+            for phrase in state.phrases {
+                let row = UIStackView()
+                row.spacing = 6
+                let insertBtn = makeActionChip(title: phrase, icon: nil, active: false) { [weak self] in
+                    self?.onInsertPhrase?(phrase)
+                }
+                let delBtn = UIButton(type: .system)
+                delBtn.setImage(UIImage(systemName: "trash"), for: .normal)
+                delBtn.tintColor = .systemRed
+                delBtn.widthAnchor.constraint(equalToConstant: 36).isActive = true
+                delBtn.addAction(UIAction { [weak self] _ in self?.onRemovePhrase?(phrase) }, for: .touchUpInside)
+                row.addArrangedSubview(insertBtn)
+                row.addArrangedSubview(delBtn)
+                row.heightAnchor.constraint(equalToConstant: 38).isActive = true
+                contentStack.addArrangedSubview(row)
+            }
+        }
+    }
+
+    private func renderVoice(_ state: State) {
+        let startBtn = makeActionChip(title: "开始语音输入", icon: "mic.fill", active: true) { [weak self] in
+            self?.onStartVoice?()
+        }
+        startBtn.heightAnchor.constraint(equalToConstant: 44).isActive = true
+        contentStack.addArrangedSubview(startBtn)
+
+        if state.hasUninsertedVoice {
+            let insertBtn = makeActionChip(title: "插入上段听写", icon: "text.badge.plus", active: false) { [weak self] in
+                self?.onInsertLatestVoice?()
+            }
+            insertBtn.heightAnchor.constraint(equalToConstant: 44).isActive = true
+            contentStack.addArrangedSubview(insertBtn)
+        }
+        if state.hasStandby {
+            let endBtn = makeActionChip(title: state.endingStandby ? "正在结束连续听写…" : "结束连续听写",
+                                        icon: "power",
+                                        active: false) { [weak self] in self?.onEndStandby?() }
+            endBtn.isEnabled = !state.endingStandby
+            endBtn.heightAnchor.constraint(equalToConstant: 44).isActive = true
+            contentStack.addArrangedSubview(endBtn)
+        }
+    }
+
+    private func navigate(to target: Page) {
+        page = target
+        if let lastState { render(lastState) }
+    }
+
+    private func makeTile(icon: String, title: String, subtitle: String, active: Bool, action: @escaping () -> Void) -> UIButton {
+        let btn = UIButton(type: .custom)
+        var config = UIButton.Configuration.filled()
+        config.baseBackgroundColor = active ? Self.activeTileColor : Self.tileColor
+        config.baseForegroundColor = active ? .systemBlue : .label
+        config.background.cornerRadius = 12
+        config.image = UIImage(systemName: icon, withConfiguration: UIImage.SymbolConfiguration(pointSize: 18, weight: .medium))
+        config.imagePlacement = .top
+        config.imagePadding = 6
+        config.title = title
+        config.subtitle = subtitle
+        config.titleAlignment = .center
+        config.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attr in
+            var out = attr
+            out.font = .systemFont(ofSize: 13, weight: .medium)
+            return out
+        }
+        config.subtitleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attr in
+            var out = attr
+            out.font = .systemFont(ofSize: 11, weight: .regular)
+            out.foregroundColor = active ? UIColor.systemBlue : UIColor.secondaryLabel
+            return out
+        }
+        btn.configuration = config
+        btn.addAction(UIAction { _ in action() }, for: .touchUpInside)
+        return btn
+    }
+
+    private func addOptionGrid(_ options: [Option], onSelect: @escaping (String) -> Void) {
+        var index = 0
+        while index < options.count {
+            let row = UIStackView()
+            row.distribution = .fillEqually
+            row.spacing = 8
+            row.heightAnchor.constraint(equalToConstant: 44).isActive = true
+            for col in 0..<2 {
+                if index + col < options.count {
+                    let opt = options[index + col]
+                    row.addArrangedSubview(makeActionChip(
+                        title: opt.title,
+                        icon: opt.selected ? "checkmark.circle.fill" : nil,
+                        active: opt.selected
+                    ) { onSelect(opt.id) })
+                } else {
+                    row.addArrangedSubview(UIView())
+                }
+            }
+            contentStack.addArrangedSubview(row)
+            index += 2
+        }
+    }
+
+    private func makeSegmentedRow(title: String, items: [(String, Int)], selected: Int, onSelect: @escaping (Int) -> Void) -> UIView {
+        let row = UIStackView()
+        row.spacing = 8
+        row.alignment = .center
+        let label = UILabel()
+        label.text = title
+        label.font = .systemFont(ofSize: 13, weight: .medium)
+        label.textColor = .secondaryLabel
+        label.widthAnchor.constraint(equalToConstant: 64).isActive = true
+        row.addArrangedSubview(label)
+
+        let pills = UIStackView()
+        pills.distribution = .fillEqually
+        pills.spacing = 6
+        for (name, value) in items {
+            let chip = makeActionChip(title: name, icon: nil, active: value == selected) { onSelect(value) }
+            pills.addArrangedSubview(chip)
+        }
+        pills.heightAnchor.constraint(equalToConstant: 36).isActive = true
+        row.addArrangedSubview(pills)
+        return row
+    }
+
+    private func makeActionChip(title: String, icon: String?, active: Bool, action: @escaping () -> Void) -> UIButton {
+        let btn = UIButton(type: .custom)
+        var config = UIButton.Configuration.filled()
+        config.title = title
+        config.image = icon.flatMap { UIImage(systemName: $0, withConfiguration: UIImage.SymbolConfiguration(pointSize: 13, weight: .medium)) }
+        config.imagePadding = 5
+        config.baseBackgroundColor = active ? Self.activeTileColor : Self.tileColor
+        config.baseForegroundColor = active ? .systemBlue : .label
+        config.background.cornerRadius = 10
+        config.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attr in
+            var out = attr
+            out.font = .systemFont(ofSize: 13, weight: active ? .semibold : .regular)
+            return out
+        }
+        btn.configuration = config
+        btn.addAction(UIAction { _ in action() }, for: .touchUpInside)
+        return btn
     }
 }
 
@@ -1958,6 +2564,15 @@ private enum VoiceDelivery {
         } catch { return origin(for: recording) }
     }
 
+    @discardableResult
+    static func rebind(_ recording: UUID, to document: UUID) -> UUID? {
+        guard let url = file("origin-", recording) else { return nil }
+        do {
+            try Data(document.uuidString.utf8).write(to: url, options: .atomic)
+            return document
+        } catch { return origin(for: recording) }
+    }
+
     static func wasInserted(_ id: UUID) -> Bool {
         if UserDefaults.standard.string(forKey: "lastInsertedVoice") == id.uuidString { return true }
         return file("inserted-", id).map { FileManager.default.fileExists(atPath: $0.path) } ?? false
@@ -2028,6 +2643,11 @@ private enum VoiceDelivery {
 extension KeyboardController: UIGestureRecognizerDelegate {
     func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
         composition.spelling.isEmpty
+    }
+
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                           shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
+        true
     }
 }
 

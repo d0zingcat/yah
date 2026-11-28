@@ -276,6 +276,8 @@
 				<string>000000000000000000000032</string>
 				<string>000000000000000000000069</string>
 				<string>000000000000000000000072</string>
+				<string>00000000000000000000007C</string>
+				<string>00000000000000000000007D</string>
 			</array>
 			<key>isa</key>
 			<string>PBXSourcesBuildPhase</string>
@@ -616,6 +618,7 @@
 				<string>A91C78F4E6384C6DA4200001</string>
 				<string>A91C78F4E6384C6DA4200002</string>
 				<string>000000000000000000000003</string>
+				<string>00000000000000000000007A</string>
 				<string>F000000000000000000000A1</string>
 				<string>000000000000000000000004</string>
 				<string>000000000000000000000005</string>
@@ -1188,6 +1191,22 @@
 			<key>isa</key><string>PBXBuildFile</string>
 			<key>fileRef</key><string>F20000000000000000000015</string>
 		</dict>
+		<key>00000000000000000000007A</key>
+		<dict>
+			<key>isa</key><string>PBXFileReference</string>
+			<key>lastKnownFileType</key><string>sourcecode.swift</string>
+			<key>path</key><string>Keyboard/InKeyboardVoiceEngine.swift</string>
+			<key>sourceTree</key><string>&lt;group&gt;</string>
+		</dict>
+		<key>00000000000000000000007B</key>
+		<dict>
+			<key>isa</key><string>PBXBuildFile</string>
+			<key>fileRef</key><string>00000000000000000000007A</string>
+		</dict>
+		<key>00000000000000000000007C</key>
+		<dict><key>isa</key><string>PBXBuildFile</string><key>fileRef</key><string>000000000000000000000038</string></dict>
+		<key>00000000000000000000007D</key>
+		<dict><key>isa</key><string>PBXBuildFile</string><key>fileRef</key><string>000000000000000000000039</string></dict>
 		<key>F20000000000000000000009</key>
 		<dict>
 			<key>isa</key><string>XCConfigurationList</string>

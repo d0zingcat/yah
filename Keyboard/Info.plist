@@ -15,7 +15,7 @@
 	<key>CFBundleShortVersionString</key>
 	<string>0.1</string>
 	<key>CFBundleVersion</key>
-	<string>10</string>
+	<string>17</string>
 	<key>NSExtension</key>
 	<dict>
 		<key>NSExtensionAttributes</key>
@@ -32,5 +32,9 @@
 		<key>NSExtensionPrincipalClass</key>
 		<string>KeyboardController</string>
 	</dict>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>使用麦克风录制你主动说出的语音，并发送到配置的转写服务。</string>
+	<key>YahKeychainAccessGroup</key>
+	<string>$(AppIdentifierPrefix)local.yah.shared</string>
 </dict>
 </plist>

@@ -1,9 +1,9 @@
 import UserNotifications
 import SwiftUI
 import UIKit
+import Combine
 import AVFAudio
 import AppIntents
-import Speech
 import ActivityKit
 import os
 
@@ -12,7 +12,218 @@ struct YahApp: App {
     @UIApplicationDelegateAdaptor(VoiceNotifications.self) private var notifications
     var body: some Scene {
         WindowGroup {
-            VoiceSetupView()
+            YahRootView()
+        }
+    }
+}
+
+@MainActor
+private struct YahRootView: View {
+    @Environment(\.scenePhase) private var scenePhase
+    @AppStorage("yahKeyboardOnboardingCompleted") private var onboardingCompleted = false
+    @State private var keyboardActivated = false
+    @State private var showingSettings = false
+
+    var body: some View {
+        Group {
+            if onboardingCompleted || showingSettings {
+                VoiceSetupView {
+                    onboardingCompleted = false
+                    showingSettings = false
+                }
+            } else {
+                YahKeyboardOnboarding(
+                    keyboardActivated: keyboardActivated,
+                    onEnterSettings: {
+                        onboardingCompleted = true
+                        showingSettings = true
+                    }
+                )
+            }
+        }
+        .onAppear(perform: refreshKeyboardActivation)
+        .onOpenURL { url in
+            if url.scheme == "local-yah-voice", url.host == "settings" {
+                showingSettings = true
+            }
+        }
+        .onChange(of: scenePhase) { phase in
+            if phase == .active { refreshKeyboardActivation() }
+        }
+        .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { _ in
+            refreshKeyboardActivation()
+        }
+    }
+
+    private func refreshKeyboardActivation() {
+        keyboardActivated = UserDefaults(suiteName: "group.local.yah.voice")?
+            .bool(forKey: "yahKeyboardWasActivated") ?? false
+    }
+}
+
+@MainActor
+private struct YahKeyboardOnboarding: View {
+    let keyboardActivated: Bool
+    let onEnterSettings: () -> Void
+    @State private var step = 1
+    @State private var selectedScheme = UserDefaults(suiteName: "group.local.yah.voice")?
+        .string(forKey: "scheme") ?? "rime_ice"
+    @FocusState private var inputFocused: Bool
+
+    private let schemes: [(id: String, title: String)] = [
+        ("rime_ice", "全拼"),
+        ("yah_t9", "九宫格"),
+        ("yah_xiaohe", "小鹤双拼"),
+        ("yah_ziranma", "自然码双拼")
+    ]
+
+    init(keyboardActivated: Bool, onEnterSettings: @escaping () -> Void) {
+        self.keyboardActivated = keyboardActivated
+        self.onEnterSettings = onEnterSettings
+        _step = State(initialValue: keyboardActivated ? 3 : 1)
+    }
+
+    var body: some View {
+        ZStack {
+            Color(uiColor: .systemGroupedBackground).ignoresSafeArea()
+            ScrollView {
+                VStack(spacing: 24) {
+                    if step == 3 {
+                        completion
+                    } else if step == 1 {
+                        enableKeyboard
+                    } else {
+                        switchKeyboard
+                    }
+                }
+                .frame(maxWidth: 520)
+                .padding(.horizontal, 22)
+                .padding(.vertical, 36)
+                .frame(maxWidth: .infinity)
+            }
+        }
+        .onChange(of: keyboardActivated) { active in
+            if active {
+                inputFocused = false
+                if step == 2 { step = 3 }
+            }
+        }
+    }
+
+    private var enableKeyboard: some View {
+        VStack(spacing: 20) {
+            Text("第一步 · 启用 Yah 输入法")
+                .font(.title2.bold())
+                .multilineTextAlignment(.center)
+            VStack(alignment: .leading, spacing: 14) {
+                Label("打开「设置」→「Yah」→「键盘」", systemImage: "1.circle.fill")
+                Label("开启「Yah」与「允许完全访问」", systemImage: "2.circle.fill")
+                Text("如果没有看到「键盘」选项，请退出并重新打开系统设置。允许完全访问用于键盘内语音识别及方案同步。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(18)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18))
+
+            Button {
+                guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
+                UIApplication.shared.open(url)
+            } label: {
+                Label("去设置中开启  ›", systemImage: "gearshape")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
+
+            Button("我已启用，下一步") { step = 2 }
+                .buttonStyle(.bordered)
+            Button("稍后进入 Yah 设置", action: onEnterSettings)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var switchKeyboard: some View {
+        VStack(spacing: 20) {
+            Text("第二步 · 切换到 Yah 输入法")
+                .font(.title2.bold())
+                .multilineTextAlignment(.center)
+            Text("点按下方输入框调出键盘，再长按 🌐 地球键并选择 Yah。")
+                .multilineTextAlignment(.center)
+                .foregroundStyle(.secondary)
+            VStack(spacing: 8) {
+                Text("长按 🌐 切换到 Yah 输入法")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.orange)
+                TextField("点此调出键盘", text: .constant(""))
+                    .textFieldStyle(.roundedBorder)
+                    .focused($inputFocused)
+                    .accessibilityLabel("键盘切换演示输入框")
+            }
+            .padding(16)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18))
+            .onAppear { inputFocused = true }
+
+            if keyboardActivated {
+                Button {
+                    step = 3
+                    inputFocused = false
+                } label: {
+                    Label("继续", systemImage: "checkmark.circle.fill")
+                }
+                .buttonStyle(.borderedProminent)
+            } else {
+                ProgressView("等待切换到 Yah 输入法…")
+                    .tint(.orange)
+            }
+            Button("返回第一步") { step = 1 }
+                .buttonStyle(.bordered)
+            Button("稍后进入 Yah 设置", action: onEnterSettings)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var completion: some View {
+        VStack(spacing: 20) {
+            Image(systemName: "checkmark.circle.fill")
+                .font(.system(size: 64))
+                .foregroundStyle(.green)
+            Text("已开启 Yah 输入法")
+                .font(.title2.bold())
+            Text("选择常用输入方案，之后也可在键盘工具栏中随时更改。")
+                .multilineTextAlignment(.center)
+                .foregroundStyle(.secondary)
+            VStack(spacing: 8) {
+                ForEach(schemes, id: \.id) { scheme in
+                    Button {
+                        selectedScheme = scheme.id
+                        let defaults = UserDefaults(suiteName: "group.local.yah.voice")
+                        defaults?.set(scheme.id, forKey: "scheme")
+                        let revision = (defaults?.integer(forKey: "schemeSelectionRevision") ?? 0) + 1
+                        defaults?.set(revision, forKey: "schemeSelectionRevision")
+                    } label: {
+                        HStack {
+                            Text(scheme.title)
+                            Spacer()
+                            if selectedScheme == scheme.id {
+                                Image(systemName: "checkmark").foregroundStyle(.tint)
+                            }
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .padding(12)
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+                }
+            }
+            Button("进入 Yah 主设置页", action: onEnterSettings)
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+            Button("重新查看启用步骤") { step = 1 }
+                .font(.footnote)
+                .foregroundStyle(.secondary)
         }
     }
 }
@@ -41,7 +252,6 @@ private struct VoiceSetupView: View {
     private enum Phase { case idle, requestingPermission, recording, transcribing }
     @Environment(\.scenePhase) private var scenePhase
     @ObservedObject private var voiceLaunch = VoiceLaunch.shared
-    @AppStorage("voiceRecognitionMode") private var recognitionMode = "automatic"
     @AppStorage("voiceStandbyMinutes") private var standbyMinutes = 10
     @State private var configuration = VoiceConfiguration.defaults
     @State private var recorder = VoiceRecorder()
@@ -96,6 +306,11 @@ private struct VoiceSetupView: View {
     @State private var pendingSpeech: PendingSpeech?
     @State private var startTask: Task<Void, Never>?
     @State private var saveSucceeded = false
+    private let onShowOnboarding: () -> Void
+
+    init(onShowOnboarding: @escaping () -> Void = {}) {
+        self.onShowOnboarding = onShowOnboarding
+    }
 
     var body: some View {
         NavigationStack {
@@ -126,47 +341,10 @@ private struct VoiceSetupView: View {
                         Text("先在系统设置 → 通用 → 键盘 → 键盘 → Yah 中开启「允许完全访问」。待机时麦克风橙点会亮起，待命声音会被丢弃。只有在键盘上点开始后才会录下本段；待机结束后橙点熄灭。")
                             .font(.footnote).foregroundStyle(.secondary)
                     }
-                }
-                Section {
-                    Button {
-                        if phase == .recording { recorder.stop() }
-                        else if phase == .idle { startRecording() }
-                    } label: {
-                        Label(
-                            phase == .recording ? "结束录音并转写" : "开始语音输入",
-                            systemImage: phase == .recording ? "stop.circle.fill" : "mic.circle.fill"
-                        )
-                    }
-                    .disabled(phase == .requestingPermission || phase == .transcribing || enablingStandby || (standby.session != nil && phase == .idle))
-
-                    if phase == .idle && standby.session == nil && !enablingStandby {
-                        Button("开始跨应用语音输入") { startRecording(forKeyboard: true) }
-                        Text("仅本次录音会在切换应用后继续。回到目标输入框，在 Yah 键盘点停止即可转写。")
-                            .font(.footnote)
-                    }
-                    Button("设置备用语音通知") {
-                        Task {
-                            do {
-                                let granted = try await UNUserNotificationCenter.current().requestAuthorization(options: .alert)
-                                show(granted ? "已允许备用通知。需要时在键盘方案菜单中点「语音工具」。" : "请在系统设置的 Yah 通知中允许提醒。", succeeded: granted)
-                            } catch { show(error.localizedDescription, succeeded: false) }
-                        }
-                    }
-                    if phase == .requestingPermission || phase == .recording {
-                        Button("取消录音", role: .cancel, action: cancelRecording)
-                    }
-                    if phase == .recording, !draft.isEmpty {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("听写草稿").font(.caption).foregroundStyle(.secondary)
-                            Text(draft).lineLimit(2)
-                        }.accessibilityElement(children: .combine)
-                    }
                     if phase == .requestingPermission { ProgressView("正在准备麦克风…") }
-                    if phase == .transcribing {
-                        ProgressView("正在转写…")
-                    }
+                    if phase == .transcribing { ProgressView("正在转写…") }
                     if phase == .idle, let pending = pendingSpeech {
-                        Button("继续上次本机转写") { resumeSpeech(pending) }
+                        Button("重试上次转写") { resumeSpeech(pending) }
                         Button("丢弃上次录音", role: .destructive) {
                             pending.remove()
                             pendingSpeech = nil
@@ -176,54 +354,12 @@ private struct VoiceSetupView: View {
                         Text(message)
                             .foregroundStyle(saveSucceeded ? .green : .red)
                     }
-
-                    TextEditor(text: $transcript)
-                        .frame(minHeight: 120)
-                        .overlay(alignment: .topLeading) {
-                            if transcript.isEmpty {
-                                Text("转写结果会显示在这里")
-                                    .foregroundStyle(.secondary)
-                                    .padding(.top, 8)
-                                    .padding(.leading, 5)
-                                    .allowsHitTesting(false)
-                            }
-                        }
-
-                    Toggle("转写完成后送到键盘", isOn: $deliverRecognizedSpeech)
-                        .disabled(phase != .idle)
-                    Button("送到 Yah 键盘") {
-                        do {
-                            try VoiceHandoff.publish(transcript)
-                            show("请在五分钟内回到目标输入框，点 Yah 键盘的「插入转写」。", succeeded: true)
-                        } catch {
-                            show("无法共享转写，请使用下方的「复制文本」。", succeeded: false)
-                        }
-                    }
-                    .disabled(transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || phase != .idle)
-                    Button("复制文本") {
-                        UIPasteboard.general.string = transcript
-                        show("已复制。回到输入框，点 Yah 键盘的「语音」再粘贴。", succeeded: true)
-                    }
-                    .disabled(transcript.isEmpty)
-                } header: {
-                    Text("语音输入")
-                } footer: {
-                    Text("也可以对 Siri 说「用 Yah 开始语音输入」，或把快捷指令「开始语音输入」绑定到操作按钮。回到原输入框，点 Yah 键盘的停止键即可转写并输入。")
                 }
 
                 Section("语音服务") {
-                    Picker("识别方式", selection: $recognitionMode) {
-                        Text("自动").tag("automatic")
-                        Text("Apple 设备端中文识别").tag("device")
-                        Text("ElevenLabs").tag("cloud")
-                    }
-                    Text("自动模式优先使用已保存的服务。服务失败时，同一段录音会转为本机识别。")
-                        .font(.footnote)
-                    if recognitionMode == "automatic" || recognitionMode == "cloud" {
                     Picker("服务商", selection: $configuration.provider) {
                         ForEach(VoiceConfiguration.Provider.allCases) { provider in
                             Text(provider.displayName).tag(provider)
-                        }
                     }
                     SecureField("ElevenLabs API Key", text: $configuration.apiKey)
                         .textInputAutocapitalization(.never)
@@ -251,6 +387,7 @@ private struct VoiceSetupView: View {
                 .disabled(phase != .idle)
 
                 Section("拼音键盘") {
+                    Button("查看键盘启用引导", action: onShowOnboarding)
                     NavigationLink("社区输入方案") { CommunitySchemeSettings() }
                     Text("可在系统设置 → 通用 → 键盘 → 键盘中添加 Yah。使用连续听写时，请在该列表点 Yah，打开「允许完全访问」。")
                 }
@@ -279,7 +416,7 @@ private struct VoiceSetupView: View {
                 if url.host == "resume" {
                     guard url.pathComponents.count == 3, let id = UUID(uuidString: url.pathComponents[1]),
                           VoiceHandoff.acceptKeyboardLink(url) else {
-                        show("请点「继续上次本机转写」。", succeeded: false)
+                        show("请点「重试上次转写」。", succeeded: false)
                         return
                     }
                     if phase == .idle { pendingSpeech = PendingSpeech.restore() }
@@ -523,7 +660,7 @@ private struct VoiceSetupView: View {
         }
         pendingSpeech = pending
         phase = .transcribing
-        finishSpeech(pending.file, using: nil, useAppleSpeech: true, automaticFallback: false)
+        finishSpeech(pending.file)
 
     }
 
@@ -545,21 +682,14 @@ private struct VoiceSetupView: View {
             pendingSpeech = nil
         }
         do {
-            let stored: VoiceConfiguration?
-            switch recognitionMode {
-            case "device", "offline": stored = nil
-            case "cloud": stored = try VoiceConfigurationStore.load()
-            default: stored = try? VoiceConfigurationStore.load()
-            }
-            if recognitionMode == "cloud" && stored?.apiKey.isEmpty != false {
+            guard let stored = try VoiceConfigurationStore.load(),
+                  !stored.apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 throw VoiceTranscriptionError.missingAPIKey
             }
-            if let stored, stored != configuration {
+            if stored != configuration {
                 reportFailure("请先保存修改后的语音配置。")
                 return
             }
-            let useAppleSpeech = stored == nil
-            let automaticFallback = recognitionMode == "automatic" && stored != nil
             draft = ""
             recorder.configurePreview { text, _ in
                 if phase == .recording, scenePhase == .active, draft != text { draft = text }
@@ -579,7 +709,7 @@ private struct VoiceSetupView: View {
                     let job = PendingSpeech(file: url, recording: recorder.keyboardSessionID)
                     job.save()
                     pendingSpeech = job
-                    finishSpeech(url, using: stored, useAppleSpeech: useAppleSpeech, automaticFallback: automaticFallback)
+                    finishSpeech(url)
                 case .failure(let error):
                     if let id = recorder.keyboardSessionID { VoiceHandoff.publishFailure(error.localizedDescription, for: id) }
                     recorder.disconnectKeyboard()
@@ -590,16 +720,6 @@ private struct VoiceSetupView: View {
             }
             startTask = Task {
                 do {
-                    if useAppleSpeech {
-                        guard SFSpeechRecognizer(locale: Locale(identifier: "zh-CN"))?.supportsOnDeviceRecognition == true else {
-                            throw DeviceSpeechError.unavailable
-                        }
-                        let authorization = await withCheckedContinuation { continuation in
-                            SFSpeechRecognizer.requestAuthorization { continuation.resume(returning: $0) }
-                        }
-                        guard authorization == .authorized else { throw DeviceSpeechError.denied }
-                        try Task.checkCancellation()
-                    }
                     if requestedID != nil, recorder.standbyDeadline == nil { throw CancellationError() }
                     try await recorder.start()
                     try Task.checkCancellation()
@@ -627,7 +747,7 @@ private struct VoiceSetupView: View {
         }
     }
 
-    private func finishSpeech(_ file: URL, using stored: VoiceConfiguration?, useAppleSpeech: Bool, automaticFallback: Bool) {
+    private func finishSpeech(_ file: URL) {
         let recording = recorder.keyboardSessionID
         var background = UIBackgroundTaskIdentifier.invalid
         if recording != nil {
@@ -639,8 +759,7 @@ private struct VoiceSetupView: View {
         finishStandbyAfterRecording()
         syncLiveActivity()
         transcriptionTask = Task {
-            await transcribe(audioURL: file, using: stored, useAppleSpeech: useAppleSpeech,
-                             automaticFallback: automaticFallback, recording: recording)
+            await transcribe(audioURL: file, recording: recording)
             if let recording { VoiceHandoff.clearStart(recording) }
             recorder.didCancelFromKeyboard = nil
             recorder.disconnectKeyboard()
@@ -683,8 +802,7 @@ private struct VoiceSetupView: View {
     }
 
     @MainActor
-    private func transcribe(audioURL: URL, using stored: VoiceConfiguration?, useAppleSpeech: Bool,
-                            automaticFallback: Bool, recording: UUID?) async {
+    private func transcribe(audioURL: URL, recording: UUID?) async {
         var keepForRetry = false
         defer {
             if !keepForRetry {
@@ -694,44 +812,29 @@ private struct VoiceSetupView: View {
                 } else { try? FileManager.default.removeItem(at: audioURL) }
             }
         }
-        var usedFallback = false
-        var preservingFailedProviderAudio = stored != nil || useAppleSpeech
         do {
-            let result: String
-            if let stored {
-                do {
-                    result = try await VoiceTranscriptionProviderFactory.make(for: stored)
-                        .transcribe(audioURL: audioURL, configuration: stored)
-                } catch {
-                    try Task.checkCancellation()
-                    guard automaticFallback else { throw error }
-                    preservingFailedProviderAudio = false
-                    usedFallback = true
-                    result = try await DeviceSpeech().transcribe(audioURL)
-                }
-            } else if useAppleSpeech {
-                result = try await DeviceSpeech().transcribe(audioURL)
-            } else {
-                result = try await DeviceSpeech().transcribe(audioURL)
+            guard let stored = try VoiceConfigurationStore.load() else {
+                throw VoiceTranscriptionError.missingAPIKey
             }
+            let result = try await VoiceTranscriptionProviderFactory.make(for: stored)
+                .transcribe(audioURL: audioURL, configuration: stored)
             try Task.checkCancellation()
             transcript = result
             if recording != nil || deliverRecognizedSpeech {
                 do {
                     try VoiceHandoff.publish(transcript, recordingID: recording)
-                    show(usedFallback ? "云服务暂时不可用，本段已在设备上完成并送回键盘。" : "转写完成，已送到键盘。", succeeded: true)
+                    show("转写完成，已送到键盘。", succeeded: true)
                 } catch {
                     show("转写已保留。键盘共享不可用，请复制文本。", succeeded: false)
                 }
             } else {
-                show(usedFallback ? "云服务暂时不可用，本段已在设备上完成。" : "转写完成。", succeeded: true)
+                show("转写完成。", succeeded: true)
             }
         } catch {
-            if let pending = pendingSpeech, pending.file == audioURL, pending.expires > Date(),
-               Task.isCancelled || preservingFailedProviderAudio {
+            if let pending = pendingSpeech, pending.file == audioURL, pending.expires > Date() {
                 keepForRetry = true
                 let hint = Task.isCancelled ? "系统已暂停转写。" : "本次服务未完成转写。"
-                let message = hint + "五分钟内可用 Apple 本机识别重试同一段录音。"
+                let message = hint + "五分钟内可重试同一段录音。"
                 if let recording { VoiceHandoff.publishFailure(message, for: recording) }
                 show(message, succeeded: false)
             } else {
@@ -1021,57 +1124,5 @@ struct YahVoiceShortcuts: AppShortcutsProvider {
         AppShortcut(intent: StartYahVoice(), phrases: [
             "Start voice input with \(.applicationName)"
         ], shortTitle: "开始语音输入", systemImageName: "mic.fill")
-    }
-}
-
-private enum DeviceSpeechError: LocalizedError {
-    case unavailable, denied, empty
-    var errorDescription: String? {
-        switch self {
-        case .unavailable: return "设备端普通话识别暂不可用。可在语音服务中配置 ElevenLabs。"
-        case .denied: return "请在系统设置中允许 Yah 使用语音识别。"
-        case .empty: return "没有识别到文字，请再说一次。"
-        }
-    }
-}
-
-@MainActor
-private final class DeviceSpeech {
-    private let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "zh-CN"))
-    private var task: SFSpeechRecognitionTask?
-    private var pending: CheckedContinuation<String, Error>?
-
-    func transcribe(_ url: URL) async throws -> String {
-        guard let recognizer, recognizer.supportsOnDeviceRecognition else { throw DeviceSpeechError.unavailable }
-        let request = SFSpeechURLRecognitionRequest(url: url)
-        request.requiresOnDeviceRecognition = true
-        request.shouldReportPartialResults = false
-        return try await withTaskCancellationHandler {
-            try Task.checkCancellation()
-            return try await withCheckedThrowingContinuation { continuation in
-                pending = continuation
-                task = recognizer.recognitionTask(with: request) { result, error in
-                    Task { @MainActor in
-                        if let error { self.finish(.failure(error)) }
-                        else if let result, result.isFinal {
-                            let text = result.bestTranscription.formattedString
-                            self.finish(text.isEmpty ? .failure(DeviceSpeechError.empty) : .success(text))
-                        }
-                    }
-                }
-            }
-        } onCancel: {
-            Task { @MainActor in
-                self.task?.cancel()
-                self.finish(.failure(CancellationError()))
-            }
-        }
-    }
-
-    private func finish(_ result: Result<String, Error>) {
-        let continuation = pending
-        pending = nil
-        task = nil
-        continuation?.resume(with: result)
     }
 }

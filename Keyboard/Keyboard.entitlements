@@ -6,5 +6,9 @@
 	<array>
 		<string>group.local.yah.voice</string>
 	</array>
+	<key>keychain-access-groups</key>
+	<array>
+		<string>$(AppIdentifierPrefix)local.yah.shared</string>
+	</array>
 </dict>
 </plist>
