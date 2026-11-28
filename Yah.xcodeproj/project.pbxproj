@@ -19,6 +19,37 @@
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
+		<key>F30000000000000000000001</key>
+		<dict>
+			<key>isa</key><string>PBXFileReference</string>
+			<key>lastKnownFileType</key><string>sourcecode.swift</string>
+			<key>path</key><string>Host/InputDashboard.swift</string>
+			<key>sourceTree</key><string>&lt;group&gt;</string>
+		</dict>
+		<key>F30000000000000000000002</key>
+		<dict><key>isa</key><string>PBXBuildFile</string><key>fileRef</key><string>F30000000000000000000001</string></dict>
+		<key>F30000000000000000000003</key>
+		<dict>
+			<key>isa</key><string>PBXFileReference</string>
+			<key>lastKnownFileType</key><string>sourcecode.swift</string>
+			<key>path</key><string>Shared/InputStatistics.swift</string>
+			<key>sourceTree</key><string>&lt;group&gt;</string>
+		</dict>
+		<key>F30000000000000000000004</key>
+		<dict><key>isa</key><string>PBXBuildFile</string><key>fileRef</key><string>F30000000000000000000003</string></dict>
+		<key>F30000000000000000000005</key>
+		<dict><key>isa</key><string>PBXBuildFile</string><key>fileRef</key><string>F30000000000000000000003</string></dict>
+		<key>F30000000000000000000006</key>
+		<dict>
+			<key>isa</key><string>PBXFileReference</string>
+			<key>lastKnownFileType</key><string>sourcecode.swift</string>
+			<key>path</key><string>Shared/YahTheme.swift</string>
+			<key>sourceTree</key><string>&lt;group&gt;</string>
+		</dict>
+		<key>F30000000000000000000007</key>
+		<dict><key>isa</key><string>PBXBuildFile</string><key>fileRef</key><string>F30000000000000000000006</string></dict>
+		<key>F30000000000000000000008</key>
+		<dict><key>isa</key><string>PBXBuildFile</string><key>fileRef</key><string>F30000000000000000000006</string></dict>
 		<key>A91C78F4E6384C6DA4200002</key>
 		<dict>
 			<key>isa</key>
@@ -278,6 +309,8 @@
 				<string>000000000000000000000072</string>
 				<string>00000000000000000000007C</string>
 				<string>00000000000000000000007D</string>
+				<string>F30000000000000000000005</string>
+				<string>F30000000000000000000008</string>
 			</array>
 			<key>isa</key>
 			<string>PBXSourcesBuildPhase</string>
@@ -442,6 +475,9 @@
 				<string>000000000000000000000071</string>
 				<string>000000000000000000000074</string>
 				<string>F20000000000000000000004</string>
+				<string>F30000000000000000000002</string>
+				<string>F30000000000000000000004</string>
+				<string>F30000000000000000000007</string>
 			</array>
 			<key>isa</key>
 			<string>PBXSourcesBuildPhase</string>
@@ -634,6 +670,9 @@
 				<string>000000000000000000000068</string>
 				<string>000000000000000000000070</string>
 				<string>000000000000000000000073</string>
+				<string>F30000000000000000000001</string>
+				<string>F30000000000000000000003</string>
+				<string>F30000000000000000000006</string>
 				<string>F20000000000000000000001</string>
 				<string>F20000000000000000000002</string>
 				<string>F20000000000000000000003</string>

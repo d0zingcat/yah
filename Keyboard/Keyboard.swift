@@ -223,7 +223,7 @@ final class KeyboardController: UIInputViewController {
     }, pick: { [weak self] index in
         guard let self else { return }
         closeCandidates()
-        if let text = composition.selectExpanded(at: index) { textDocumentProxy.insertText(text) }
+        if let text = composition.selectExpanded(at: index) { commitTypedText(text) }
         refresh()
     })
 
@@ -256,7 +256,7 @@ final class KeyboardController: UIInputViewController {
         settingsButton.accessibilityLabel = open ? "收起设置" : "键盘设置"
         let symbol = UIImage.SymbolConfiguration(pointSize: 16, weight: .medium)
         settingsButton.setImage(UIImage(systemName: open ? "chevron.down" : "square.grid.2x2", withConfiguration: symbol), for: .normal)
-        settingsButton.tintColor = open ? .systemBlue : .label
+        settingsButton.tintColor = open ? YahTheme.accentUIColor : .label
     }
 
     private func updateCandidateToggle() {
@@ -742,6 +742,7 @@ final class KeyboardController: UIInputViewController {
         if waitingForVoice?.recording == item.recordingID { waitingForVoice = nil; resultWaitBegan = nil }
         finishComposition()
         textDocumentProxy.insertText(item.text)
+        InputStatisticsStore.record(item.text, as: .voice)
         insertVoice.isHidden = true
         playKeyFeedback()
         refresh()
@@ -902,7 +903,7 @@ final class KeyboardController: UIInputViewController {
         for (title, description, offset) in [("←", "光标左移", -1), ("Tab", "制表符", 0), ("→", "光标右移", 1)] {
             let cap = button(title, style: .control) { keyboard in
                 keyboard.finishComposition()
-                if offset == 0 { keyboard.textDocumentProxy.insertText("\t") }
+                if offset == 0 { keyboard.commitTypedText("\t") }
                 else { keyboard.textDocumentProxy.adjustTextPosition(byCharacterOffset: offset) }
             }
             cap.accessibilityLabel = description
@@ -921,7 +922,7 @@ final class KeyboardController: UIInputViewController {
             for value in text {
                 let cap = button(String(value), style: group === numbers ? .letter : .control) { keyboard in
                     keyboard.finishComposition()
-                    keyboard.textDocumentProxy.insertText(String(value))
+                    keyboard.commitTypedText(String(value))
                 }
                 cap.accessibilityLabel = (value.isNumber ? "数字 " : "符号 ") + String(value)
                 group.addArrangedSubview(cap)
@@ -1005,12 +1006,12 @@ final class KeyboardController: UIInputViewController {
                     let typed = Character(value)
                     if keyboard.acceptsCodeCharacter(typed) ||
                         (!keyboard.english && !keyboard.symbols && (keyboard.communityID != nil || keyboard.shifted)) {
-                        if let commit = keyboard.composition.appendCommunity(typed) { keyboard.textDocumentProxy.insertText(commit) }
+                        if let commit = keyboard.composition.appendCommunity(typed) { keyboard.commitTypedText(commit) }
                     } else if !keyboard.english && !keyboard.symbols && key.isLetter {
                         keyboard.composition.append(key)
                     } else {
                         keyboard.finishComposition()
-                        keyboard.textDocumentProxy.insertText(value)
+                        keyboard.commitTypedText(value)
                     }
                     if keyboard.shifted { keyboard.shifted = false; keyboard.rebuild() }
                 }
@@ -1061,7 +1062,7 @@ final class KeyboardController: UIInputViewController {
         let punctuation = field == .emailAddress ? "@" : (field == .URL ? "/" : (english ? "," : "，"))
         let comma = button(punctuation, style: .control) {
             $0.finishComposition()
-            $0.textDocumentProxy.insertText(punctuation)
+            $0.commitTypedText(punctuation)
         }
         controls.addArrangedSubview(comma)
         if nineKeys {
@@ -1175,8 +1176,13 @@ final class KeyboardController: UIInputViewController {
     @objc private func insertFlickSymbol(_ gesture: SymbolFlick) {
         guard let symbol = gesture.symbol else { return }
         if acceptsCodeCharacter(symbol) { composition.append(symbol) }
-        else { finishComposition(); textDocumentProxy.insertText(String(symbol)) }
+        else { finishComposition(); commitTypedText(String(symbol)) }
         refresh()
+    }
+
+    private func commitTypedText(_ text: String) {
+        textDocumentProxy.insertText(text)
+        InputStatisticsStore.record(text, as: .typed)
     }
 
     private func finishComposition(allowRawFallback: Bool = true) {
@@ -1185,11 +1191,11 @@ final class KeyboardController: UIInputViewController {
             let preview = composition.displaySpelling
             if !allowRawFallback && !composition.hasNativeCandidates { return }
             if let selected = composition.select(0) {
-                textDocumentProxy.insertText(selected)
+                commitTypedText(selected)
             }
             if composition.spelling == pending && composition.displaySpelling == preview {
                 if !allowRawFallback { return }
-                textDocumentProxy.insertText(preview)
+                commitTypedText(preview)
                 composition.clear()
             }
         }
@@ -1327,18 +1333,18 @@ final class KeyboardController: UIInputViewController {
     }
 
     private func insert(defaultText: String) {
-        if composition.spelling.isEmpty { textDocumentProxy.insertText(defaultText) }
-        else if let word = composition.select(0) { textDocumentProxy.insertText(word) }
+        if composition.spelling.isEmpty { commitTypedText(defaultText) }
+        else if let word = composition.select(0) { commitTypedText(word) }
     }
 
     private func commitReturn() {
         let raw = composition.spelling
         if raw.isEmpty {
-            textDocumentProxy.insertText("\n")
+            commitTypedText("\n")
         } else if communityID == nil, scheme != .nine, !isEnteringCode, !composition.hasSelectedSegment,
                   raw.utf8.contains(where: { (97...122).contains($0) }),
                   raw.utf8.allSatisfy({ (97...122).contains($0) || $0 == 39 }) {
-            textDocumentProxy.insertText(raw.replacingOccurrences(of: "'", with: ""))
+            commitTypedText(raw.replacingOccurrences(of: "'", with: ""))
             composition.clear()
         } else {
             finishComposition(allowRawFallback: false)
@@ -1371,7 +1377,7 @@ final class KeyboardController: UIInputViewController {
             }
             var actions: [UIMenuElement] = saved.map { phrase in
                 UIAction(title: phrase) { [weak self] _ in
-                    self?.textDocumentProxy.insertText(phrase)
+                    self?.commitTypedText(phrase)
                 }
             }
             actions.append(save)
@@ -1435,7 +1441,7 @@ final class KeyboardController: UIInputViewController {
                 keyboard.edgeTouches.removeAll()
                 keyboard.composition.clear()
                 for key in match.code { keyboard.composition.append(key) }
-                if let text = keyboard.composition.selectNative(at: 0) { keyboard.textDocumentProxy.insertText(text) }
+                if let text = keyboard.composition.selectNative(at: 0) { keyboard.commitTypedText(text) }
             }
             choice.configuration?.baseForegroundColor = .systemIndigo
             choice.accessibilityLabel = "纠错候选，" + match.word
@@ -1567,7 +1573,7 @@ final class KeyboardController: UIInputViewController {
         }
         settingsPanel.onInsertPhrase = { [weak self] phrase in
             guard let self else { return }
-            textDocumentProxy.insertText(phrase)
+            commitTypedText(phrase)
             closeSettings()
         }
         settingsPanel.onSaveSelectionPhrase = { [weak self] in
@@ -1626,7 +1632,7 @@ final class KeyboardController: UIInputViewController {
         let corrections = correctionButtons(excluding: native)
         for (i, word) in native.enumerated() {
             suggestions.addArrangedSubview(button(word) { keyboard in
-                if let selected = keyboard.composition.select(i) { keyboard.textDocumentProxy.insertText(selected) }
+                if let selected = keyboard.composition.select(i) { keyboard.commitTypedText(selected) }
             })
             if i == 0 { corrections.forEach { suggestions.addArrangedSubview($0) } }
         }
@@ -1711,7 +1717,7 @@ private final class KeyboardLevelMeter: UIView {
     private var reduceMotion = false
     private var displayLink: CADisplayLink?
     private var phase: CGFloat = 0
-    var barColor: UIColor = .systemBlue
+    var barColor: UIColor = YahTheme.accentUIColor
     var minimumBarHeight: CGFloat = 4
     var showIdleBars = false
     var isListening = false {
@@ -2246,7 +2252,10 @@ private final class KeyboardSettingsPanel: UIView {
     private let contentStack = UIStackView()
 
     private static let tileColor = UIColor { $0.userInterfaceStyle == .dark ? UIColor(white: 0.24, alpha: 1) : .white }
-    private static let activeTileColor = UIColor { $0.userInterfaceStyle == .dark ? UIColor.systemBlue.withAlphaComponent(0.28) : UIColor.systemBlue.withAlphaComponent(0.12) }
+    private static let activeTileColor = UIColor { traits in
+        YahTheme.accentUIColor.resolvedColor(with: traits)
+            .withAlphaComponent(traits.userInterfaceStyle == .dark ? 0.28 : 0.12)
+    }
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -2492,7 +2501,7 @@ private final class KeyboardSettingsPanel: UIView {
         let btn = UIButton(type: .custom)
         var config = UIButton.Configuration.filled()
         config.baseBackgroundColor = active ? Self.activeTileColor : Self.tileColor
-        config.baseForegroundColor = active ? .systemBlue : .label
+        config.baseForegroundColor = active ? YahTheme.accentUIColor : .label
         config.background.cornerRadius = 12
         config.image = UIImage(systemName: icon, withConfiguration: UIImage.SymbolConfiguration(pointSize: 18, weight: .medium))
         config.imagePlacement = .top
@@ -2508,7 +2517,7 @@ private final class KeyboardSettingsPanel: UIView {
         config.subtitleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attr in
             var out = attr
             out.font = .systemFont(ofSize: 11, weight: .regular)
-            out.foregroundColor = active ? UIColor.systemBlue : UIColor.secondaryLabel
+            out.foregroundColor = active ? YahTheme.accentUIColor : UIColor.secondaryLabel
             return out
         }
         btn.configuration = config
@@ -2570,7 +2579,7 @@ private final class KeyboardSettingsPanel: UIView {
         config.image = icon.flatMap { UIImage(systemName: $0, withConfiguration: UIImage.SymbolConfiguration(pointSize: 13, weight: .medium)) }
         config.imagePadding = 5
         config.baseBackgroundColor = active ? Self.activeTileColor : Self.tileColor
-        config.baseForegroundColor = active ? .systemBlue : .label
+        config.baseForegroundColor = active ? YahTheme.accentUIColor : .label
         config.background.cornerRadius = 10
         config.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attr in
             var out = attr

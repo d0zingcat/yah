@@ -5,7 +5,7 @@
     </filter>
     <clipPath id="sq"><rect x="100" y="100" width="824" height="824" rx="185"/></clipPath>
   </defs>
-  <rect x="100" y="100" width="824" height="824" rx="185" fill="#C9472A" filter="url(#sh)"/>
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="#FFFFFF" filter="url(#sh)"/>
   <g clip-path="url(#sq)">
     <image x="100" y="100" width="824" height="824" xlink:href="c-seal.svg"/>
   </g>
