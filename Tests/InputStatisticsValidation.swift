@@ -32,14 +32,14 @@ enum InputStatisticsValidation {
         let sourceID = try local.sourceID()
 
         try local.recordSource(day: 20261128, typed: 2, voice: 0)
-        var batch = try local.pendingRecords(sourceID: sourceID)
+        var batch = try local.pendingRecords()
         var merged = try shared.merge(batch, sourceID: sourceID)
         try local.clearPending(merged)
         var storedDays = try shared.days()
         expect(storedDays[20261128]?.total == 2)
 
         try local.recordSource(day: 20261128, typed: 3, voice: 0)
-        batch = try local.pendingRecords(sourceID: sourceID)
+        batch = try local.pendingRecords()
         _ = try shared.merge(batch, sourceID: sourceID)
         _ = try shared.merge(batch, sourceID: sourceID)
         try local.clearPending(batch)
@@ -48,7 +48,7 @@ enum InputStatisticsValidation {
         expect(storedDays[20261128]?.total == 5)
 
         try local.recordSource(day: 20261128, typed: 0, voice: 3)
-        batch = try local.pendingRecords(sourceID: sourceID)
+        batch = try local.pendingRecords()
         merged = try shared.merge(batch, sourceID: sourceID)
         _ = try shared.merge(batch, sourceID: sourceID)
         try local.clearPending(merged)
@@ -58,7 +58,7 @@ enum InputStatisticsValidation {
         expect(storedDays[20261128]?.total == 8)
 
         try local.recordSource(day: 20261129, typed: 1, voice: 0)
-        batch = try local.pendingRecords(sourceID: sourceID)
+        batch = try local.pendingRecords()
         merged = try shared.merge(batch, sourceID: sourceID)
         try local.clearPending(merged)
         storedDays = try shared.days()
@@ -66,11 +66,11 @@ enum InputStatisticsValidation {
         expect(storedDays[20261128]?.total == 8)
 
         try local.recordSource(day: 20261130, typed: 2, voice: 0)
-        let earlierBatch = try local.pendingRecords(sourceID: sourceID)
+        let earlierBatch = try local.pendingRecords()
         try local.recordSource(day: 20261130, typed: 3, voice: 0)
         let committedEarlierBatch = try shared.merge(earlierBatch, sourceID: sourceID)
         try local.clearPending(committedEarlierBatch)
-        batch = try local.pendingRecords(sourceID: sourceID)
+        batch = try local.pendingRecords()
         expect(batch.contains(where: { $0.day == 20261130 && $0.typed == 5 }))
         merged = try shared.merge(batch, sourceID: sourceID)
         try local.clearPending(merged)

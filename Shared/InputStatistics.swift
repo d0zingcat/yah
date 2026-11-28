@@ -138,7 +138,7 @@ enum InputStatisticsStore {
 
     private static func migrate(local: StatisticsDatabase, into shared: StatisticsDatabase) throws -> Int {
         let sourceID = try local.sourceID()
-        let pending = try local.pendingRecords(sourceID: sourceID)
+        let pending = try local.pendingRecords()
         guard !pending.isEmpty else { return 0 }
         let merged = try shared.merge(pending, sourceID: sourceID)
         try local.clearPending(merged)
@@ -177,13 +177,6 @@ final class StatisticsDatabase {
                 day INTEGER PRIMARY KEY,
                 typed INTEGER NOT NULL DEFAULT 0,
                 voice INTEGER NOT NULL DEFAULT 0
-            );
-            CREATE TABLE IF NOT EXISTS source (
-                source_id TEXT NOT NULL,
-                day INTEGER NOT NULL,
-                typed INTEGER NOT NULL,
-                voice INTEGER NOT NULL,
-                PRIMARY KEY (source_id, day)
             );
             CREATE TABLE IF NOT EXISTS pending (
                 day INTEGER PRIMARY KEY,
@@ -224,19 +217,6 @@ final class StatisticsDatabase {
     func recordSource(day: Int, typed: Int, voice: Int) throws {
         try transaction {
             try add(day: day, typed: typed, voice: voice)
-            let statement = try prepare("""
-                INSERT INTO source (source_id, day, typed, voice) VALUES (?, ?, ?, ?)
-                ON CONFLICT(source_id, day) DO UPDATE SET
-                    typed = typed + excluded.typed,
-                    voice = voice + excluded.voice
-                """)
-            defer { sqlite3_finalize(statement) }
-            bind(try sourceID(), at: 1, to: statement)
-            sqlite3_bind_int64(statement, 2, sqlite3_int64(day))
-            sqlite3_bind_int64(statement, 3, sqlite3_int64(typed))
-            sqlite3_bind_int64(statement, 4, sqlite3_int64(voice))
-            try stepDone(statement)
-
             let pending = try prepare("""
                 INSERT INTO pending (day, version) VALUES (?, 1)
                 ON CONFLICT(day) DO UPDATE SET version = version + 1
@@ -271,14 +251,13 @@ final class StatisticsDatabase {
         return sourceID
     }
 
-    func pendingRecords(sourceID: String) throws -> [PendingRecord] {
+    func pendingRecords() throws -> [PendingRecord] {
         let statement = try prepare("""
-            SELECT pending.day, pending.version, source.typed, source.voice
+            SELECT pending.day, pending.version, days.typed, days.voice
             FROM pending
-            JOIN source ON source.day = pending.day AND source.source_id = ?
+            JOIN days ON days.day = pending.day
             """)
         defer { sqlite3_finalize(statement) }
-        bind(sourceID, at: 1, to: statement)
         var records: [PendingRecord] = []
         var status = sqlite3_step(statement)
         while status == SQLITE_ROW {

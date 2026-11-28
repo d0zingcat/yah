@@ -64,13 +64,14 @@ struct InputDashboardView: View {
     @State private var snapshot = InputStatisticsSnapshot.empty
     @State private var loadError: String?
     @State private var range: InputDashboardRange = .day
-    @State private var selectedDay = InputStatisticsStore.dayKey()
+    @State private var anchorDay = InputStatisticsStore.dayKey()
+    @State private var followsToday = true
     @State private var selectedBucket: Int?
     @State private var showLevel = false
     @State private var showDatePicker = false
 
     private var buckets: [InputDashboardBucket] {
-        Self.buckets(range: range, selectedDay: selectedDay)
+        Self.buckets(range: range, anchorDay: anchorDay)
     }
 
     private var chartValues: [Int] {
@@ -94,7 +95,7 @@ struct InputDashboardView: View {
 
     private var selectedBucketData: InputStatisticsDay {
         guard buckets.indices.contains(selectedIndex) else {
-            return InputStatisticsDay(key: selectedDay, typed: 0, voice: 0)
+            return InputStatisticsDay(key: anchorDay, typed: 0, voice: 0)
         }
         let bucket = buckets[selectedIndex]
         return snapshot.days.values.reduce(
@@ -345,7 +346,6 @@ struct InputDashboardView: View {
                     let value = chartValues.indices.contains(index) ? chartValues[index] : 0
                     Button {
                         selectedBucket = bucket.start
-                        selectedDay = bucket.start
                     } label: {
                         VStack(spacing: 0) {
                             Spacer(minLength: 0)
@@ -387,9 +387,10 @@ struct InputDashboardView: View {
             DatePicker(
                 "日期",
                 selection: Binding(
-                    get: { InputStatisticsStore.date(forDayKey: selectedDay) ?? Date() },
+                    get: { InputStatisticsStore.date(forDayKey: min(anchorDay, today)) ?? Date() },
                     set: { date in
-                        selectedDay = InputStatisticsStore.dayKey(for: date)
+                        anchorDay = InputStatisticsStore.dayKey(for: date)
+                        followsToday = anchorDay == today
                         selectedBucket = nil
                     }
                 ),
@@ -429,6 +430,12 @@ struct InputDashboardView: View {
     }
 
     private func reload() {
+        let today = InputStatisticsStore.dayKey()
+        if anchorDay > today || (followsToday && anchorDay != today) {
+            anchorDay = today
+            followsToday = true
+            selectedBucket = nil
+        }
         loadError = nil
         InputStatisticsStore.load { result in
             DispatchQueue.main.async {
@@ -454,12 +461,12 @@ struct InputDashboardView: View {
         Self.description(for: bucket, range: range)
     }
 
-    private static func buckets(range: InputDashboardRange, selectedDay: Int) -> [InputDashboardBucket] {
+    private static func buckets(range: InputDashboardRange, anchorDay: Int) -> [InputDashboardBucket] {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = .current
         calendar.firstWeekday = 2
         calendar.minimumDaysInFirstWeek = 4
-        guard let date = InputStatisticsStore.date(forDayKey: selectedDay) else { return [] }
+        guard let date = InputStatisticsStore.date(forDayKey: anchorDay) else { return [] }
 
         let starts: [Date]
         switch range {
