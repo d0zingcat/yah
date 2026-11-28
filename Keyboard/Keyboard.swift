@@ -670,7 +670,7 @@ final class KeyboardController: UIInputViewController {
                 let capturing = !s.transcribing && !stopping
                 let snapshot = capturing ? s.currentPreview : nil
                 voicePanel.renderDirect(
-                    title: capturing ? "正在聆听，轻触完成" : "正在识别并上屏…",
+                    title: capturing ? "再次轻触结束" : "正在识别…",
                     message: capturing ? (snapshot?.text ?? "") : "",
                     levels: snapshot?.levels ?? [],
                     mode: capturing ? .listening : .finishing,
@@ -1851,6 +1851,153 @@ private final class KeyboardLevelMeter: UIView {
     }
 }
 
+private final class KeyboardOrbWaveformView: UIView {
+    private var targetLevels: [Float] = []
+    private var displayLevels: [CGFloat] = Array(repeating: 0.12, count: 7)
+    private var haloScale: CGFloat = 1.0
+    private var displayLink: CADisplayLink?
+    private var phase: CGFloat = 0
+    private var reduceMotion = false
+
+    enum Mode { case idle, starting, listening, finishing }
+    var mode: Mode = .idle {
+        didSet { updateDisplayLink(); setNeedsDisplay() }
+    }
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        isOpaque = false
+        backgroundColor = .clear
+        contentMode = .redraw
+        isUserInteractionEnabled = false
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    deinit { displayLink?.invalidate() }
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        updateDisplayLink()
+    }
+
+    override var isHidden: Bool {
+        didSet { updateDisplayLink() }
+    }
+
+    func update(levels: [Float], mode: Mode, reduceMotion: Bool) {
+        self.targetLevels = levels
+        self.mode = mode
+        self.reduceMotion = reduceMotion
+        if reduceMotion || mode == .idle {
+            displayLevels = [0.18, 0.36, 0.62, 0.82, 0.62, 0.36, 0.18]
+            haloScale = 1.0
+            setNeedsDisplay()
+        } else {
+            updateDisplayLink()
+        }
+    }
+
+    private func updateDisplayLink() {
+        let shouldRun = window != nil && !isHidden && mode != .idle && !reduceMotion
+        if shouldRun {
+            if displayLink == nil {
+                let link = CADisplayLink(target: self, selector: #selector(step))
+                link.preferredFrameRateRange = CAFrameRateRange(minimum: 30, maximum: 60, preferred: 60)
+                link.add(to: .main, forMode: .common)
+                displayLink = link
+            }
+        } else {
+            displayLink?.invalidate()
+            displayLink = nil
+        }
+    }
+
+    @objc private func step() {
+        phase += mode == .finishing ? 0.14 : 0.11
+        let count = displayLevels.count
+        let mid = CGFloat(count - 1) / 2
+        let recent = Array(targetLevels.suffix(7))
+        let peak = CGFloat(recent.max() ?? 0)
+
+        let targetHalo: CGFloat
+        switch mode {
+        case .listening:
+            let idlePulse = 0.04 * (0.5 + 0.5 * sin(phase * 0.9))
+            targetHalo = 1.04 + idlePulse + min(0.24, peak * 0.28)
+        case .starting, .finishing:
+            targetHalo = 1.05 + 0.05 * (0.5 + 0.5 * sin(phase * 1.2))
+        case .idle:
+            targetHalo = 1.0
+        }
+        haloScale += (targetHalo - haloScale) * (targetHalo > haloScale ? 0.28 : 0.14)
+
+        for i in 0..<count {
+            let distance = abs(CGFloat(i) - mid) / max(1, mid)
+            let envelope = 0.28 + 0.72 * cos(distance * .pi * 0.48)
+            let desired: CGFloat
+            switch mode {
+            case .listening:
+                let sample: CGFloat
+                if recent.isEmpty {
+                    sample = 0
+                } else {
+                    let idx = min(recent.count - 1, max(0, Int((1 - distance) * CGFloat(recent.count - 1))))
+                    sample = CGFloat(recent[idx])
+                }
+                let breath = (0.18 + 0.10 * sin(phase + CGFloat(i) * 0.7)) * envelope
+                let voice = sample * envelope * (0.85 + 0.25 * sin(phase * 2.2 + CGFloat(i) * 0.9))
+                desired = min(1.0, max(breath, voice))
+            case .starting, .finishing:
+                let wave = 0.5 + 0.5 * sin(phase * 1.8 - CGFloat(i) * 0.65)
+                desired = (0.20 + 0.45 * wave) * envelope
+            case .idle:
+                desired = 0.15 * envelope
+            }
+            let smoothing: CGFloat = desired > displayLevels[i] ? 0.36 : 0.18
+            displayLevels[i] += (desired - displayLevels[i]) * smoothing
+        }
+        setNeedsDisplay()
+    }
+
+    override func draw(_ rect: CGRect) {
+        let center = CGPoint(x: bounds.midX, y: bounds.midY)
+        let orbDiameter = min(bounds.width, bounds.height) * 0.66
+        let orbRadius = orbDiameter / 2
+
+        // Outer soft concentric halo that responds to audio intensity
+        let haloRadius = orbRadius * haloScale
+        let haloColor = UIColor.label.resolvedColor(with: traitCollection).withAlphaComponent(0.09)
+        haloColor.setFill()
+        UIBezierPath(arcCenter: center, radius: haloRadius, startAngle: 0, endAngle: .pi * 2, clockwise: true).fill()
+
+        // Core high-contrast circular orb (black in light mode, white in dark mode)
+        let orbColor = UIColor { $0.userInterfaceStyle == .dark ? UIColor(white: 0.95, alpha: 1) : UIColor(white: 0.08, alpha: 1) }
+        orbColor.resolvedColor(with: traitCollection).setFill()
+        UIBezierPath(arcCenter: center, radius: orbRadius, startAngle: 0, endAngle: .pi * 2, clockwise: true).fill()
+
+        // 7 crisp vertical capsule bars inside the orb
+        let barColor = UIColor { $0.userInterfaceStyle == .dark ? UIColor(white: 0.08, alpha: 1) : .white }
+        barColor.resolvedColor(with: traitCollection).setFill()
+
+        let count = displayLevels.count
+        let barWidth: CGFloat = 4.2
+        let spacing: CGFloat = 5.6
+        let totalWidth = CGFloat(count) * barWidth + CGFloat(count - 1) * spacing
+        let startX = center.x - totalWidth / 2
+        let maxBarHeight = orbDiameter * 0.44
+        let minBarHeight = barWidth
+
+        for i in 0..<count {
+            let level = displayLevels[i]
+            let height = max(minBarHeight, minBarHeight + level * (maxBarHeight - minBarHeight))
+            let x = startX + CGFloat(i) * (barWidth + spacing)
+            let y = center.y - height / 2
+            UIBezierPath(roundedRect: CGRect(x: x, y: y, width: barWidth, height: height), cornerRadius: barWidth / 2).fill()
+        }
+    }
+}
+
 private final class KeyboardVoicePanel: UIView, UIGestureRecognizerDelegate {
     enum DirectMode: Equatable { case permissions, starting, listening, finishing, failed }
     var onCancel: (() -> Void)?
@@ -1860,99 +2007,53 @@ private final class KeyboardVoicePanel: UIView, UIGestureRecognizerDelegate {
     var onPrimaryAction: (() -> Void)?
     var onAuthorize: (() -> Void)?
 
-    private let dotView = UIView()
+    private let orbView = KeyboardOrbWaveformView()
     private let statusLabel = UILabel()
-    private let headerSpacer = UIView()
-    private let standbyLabel = UILabel()
-    private let endStandbyButton = UIButton(type: .system)
     private let draftLabel = UILabel()
-    private let meter = KeyboardLevelMeter()
     private let cancelButton = UIButton(type: .system)
-    private let stopButton = UIButton(type: .system)
     private let permissionMessage = UILabel()
     private let permissionButton = UIButton(type: .system)
     private let permissionCancelButton = UIButton(type: .system)
     private let settingsContainer = UIView()
+    private let permissionContent = UIStackView()
+    private let activeContainer = UIView()
     private var directMode: DirectMode?
 
     override init(frame: CGRect) {
         super.init(frame: frame)
-        let card = UIView()
-        card.backgroundColor = UIColor { $0.userInterfaceStyle == .dark ? UIColor(white: 0.17, alpha: 1) : UIColor(white: 0.97, alpha: 1) }
-        card.layer.cornerRadius = 16
-        card.layer.cornerCurve = .continuous
-        card.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(card)
+        backgroundColor = .clear
 
-        dotView.layer.cornerRadius = 4
-        dotView.translatesAutoresizingMaskIntoConstraints = false
-        NSLayoutConstraint.activate([
-            dotView.widthAnchor.constraint(equalToConstant: 8),
-            dotView.heightAnchor.constraint(equalToConstant: 8)
-        ])
+        activeContainer.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(activeContainer)
 
-        statusLabel.font = .preferredFont(forTextStyle: .subheadline).withWeight(.semibold)
-        statusLabel.adjustsFontForContentSizeCategory = true
+        orbView.translatesAutoresizingMaskIntoConstraints = false
+        activeContainer.addSubview(orbView)
+
+        statusLabel.font = .systemFont(ofSize: 14, weight: .regular)
         statusLabel.textColor = .secondaryLabel
-        statusLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
+        statusLabel.textAlignment = .center
+        statusLabel.translatesAutoresizingMaskIntoConstraints = false
+        activeContainer.addSubview(statusLabel)
 
-        standbyLabel.font = .monospacedDigitSystemFont(ofSize: UIFont.preferredFont(forTextStyle: .caption1).pointSize, weight: .medium)
-        standbyLabel.textColor = .secondaryLabel
-
-        endStandbyButton.setTitle("结束待机", for: .normal)
-        endStandbyButton.titleLabel?.font = .preferredFont(forTextStyle: .caption1)
-        endStandbyButton.accessibilityLabel = "结束连续听写"
-        endStandbyButton.accessibilityIdentifier = "voice-panel-end-standby"
-        endStandbyButton.addAction(UIAction { [weak self] _ in self?.onEndStandby?() }, for: .touchUpInside)
-
-        let header = UIStackView(arrangedSubviews: [dotView, statusLabel, headerSpacer, standbyLabel, endStandbyButton])
-        header.spacing = 6
-        header.alignment = .center
-
-        draftLabel.font = .preferredFont(forTextStyle: .body)
-        draftLabel.adjustsFontForContentSizeCategory = true
-        draftLabel.numberOfLines = 2
+        draftLabel.font = .preferredFont(forTextStyle: .footnote)
+        draftLabel.textColor = .label
+        draftLabel.numberOfLines = 1
         draftLabel.lineBreakMode = .byTruncatingHead
         draftLabel.textAlignment = .center
-
-        meter.barColor = .systemBlue
-        meter.minimumBarHeight = 5
-        meter.showIdleBars = true
-        meter.translatesAutoresizingMaskIntoConstraints = false
-        meter.heightAnchor.constraint(equalToConstant: 44).isActive = true
-
-        let body = UIStackView(arrangedSubviews: [draftLabel, meter])
-        body.axis = .vertical
-        body.spacing = 10
-        body.alignment = .fill
+        draftLabel.translatesAutoresizingMaskIntoConstraints = false
+        activeContainer.addSubview(draftLabel)
 
         var cancelConfig = UIButton.Configuration.filled()
-        cancelConfig.title = "取消"
-        cancelConfig.image = UIImage(systemName: "xmark")
-        cancelConfig.imagePadding = 6
+        cancelConfig.image = UIImage(systemName: "xmark", withConfiguration: UIImage.SymbolConfiguration(pointSize: 12, weight: .semibold))
         cancelConfig.cornerStyle = .capsule
-        cancelConfig.baseBackgroundColor = UIColor { $0.userInterfaceStyle == .dark ? UIColor(white: 0.27, alpha: 1) : .systemGray5 }
-        cancelConfig.baseForegroundColor = .label
+        cancelConfig.baseBackgroundColor = UIColor { $0.userInterfaceStyle == .dark ? UIColor(white: 0.24, alpha: 1) : UIColor.black.withAlphaComponent(0.08) }
+        cancelConfig.baseForegroundColor = .secondaryLabel
         cancelButton.configuration = cancelConfig
         cancelButton.accessibilityLabel = "取消录音"
         cancelButton.accessibilityIdentifier = "voice-panel-cancel"
+        cancelButton.translatesAutoresizingMaskIntoConstraints = false
         cancelButton.addAction(UIAction { [weak self] _ in self?.onCancel?() }, for: .touchUpInside)
-
-        var stopConfig = UIButton.Configuration.filled()
-        stopConfig.title = "完成"
-        stopConfig.image = UIImage(systemName: "checkmark")
-        stopConfig.imagePadding = 6
-        stopConfig.cornerStyle = .capsule
-        stopConfig.baseBackgroundColor = .systemBlue
-        stopConfig.baseForegroundColor = .white
-        stopButton.configuration = stopConfig
-        stopButton.accessibilityLabel = "停止录音并输入"
-        stopButton.accessibilityIdentifier = "voice-panel-stop"
-        stopButton.addAction(UIAction { [weak self] _ in
-            guard let self else { return }
-            if directMode == .listening || directMode == .finishing { onPrimaryAction?() }
-            else { onStop?() }
-        }, for: .touchUpInside)
+        activeContainer.addSubview(cancelButton)
 
         permissionMessage.font = .preferredFont(forTextStyle: .body)
         permissionMessage.adjustsFontForContentSizeCategory = true
@@ -1964,54 +2065,56 @@ private final class KeyboardVoicePanel: UIView, UIGestureRecognizerDelegate {
         permissionButton.addAction(UIAction { [weak self] _ in self?.onAuthorize?() }, for: .touchUpInside)
         settingsContainer.heightAnchor.constraint(equalToConstant: 36).isActive = true
 
-        let actions = UIStackView(arrangedSubviews: [cancelButton, stopButton])
-        actions.spacing = 12
-        actions.distribution = .fillEqually
-        actions.translatesAutoresizingMaskIntoConstraints = false
-        actions.heightAnchor.constraint(equalToConstant: 42).isActive = true
         permissionCancelButton.setTitle("取消", for: .normal)
         permissionCancelButton.addAction(UIAction { [weak self] _ in self?.onCancel?() }, for: .touchUpInside)
         let permissionActions = UIStackView(arrangedSubviews: [permissionCancelButton, permissionButton])
         permissionActions.spacing = 10
         permissionActions.distribution = .fillEqually
         permissionActions.translatesAutoresizingMaskIntoConstraints = false
-        permissionButton.setContentHuggingPriority(.required, for: .horizontal)
-        NSLayoutConstraint.activate([
-            permissionActions.heightAnchor.constraint(equalToConstant: 42),
-            permissionMessage.heightAnchor.constraint(greaterThanOrEqualToConstant: 48)
-        ])
-        let permissionContent = UIStackView(arrangedSubviews: [permissionMessage, permissionActions, settingsContainer])
+        permissionActions.heightAnchor.constraint(equalToConstant: 42).isActive = true
+
         permissionContent.axis = .vertical
-        permissionContent.spacing = 8
+        permissionContent.spacing = 10
         permissionContent.alignment = .center
+        permissionContent.addArrangedSubview(permissionMessage)
+        permissionContent.addArrangedSubview(permissionActions)
+        permissionContent.addArrangedSubview(settingsContainer)
         permissionContent.translatesAutoresizingMaskIntoConstraints = false
-
-        let topSpacer = UIView()
-        let bottomSpacer = UIView()
-        topSpacer.setContentHuggingPriority(UILayoutPriority(1), for: .vertical)
-        bottomSpacer.setContentHuggingPriority(UILayoutPriority(1), for: .vertical)
-
-        let content = UIStackView(arrangedSubviews: [header, topSpacer, body, bottomSpacer, actions, permissionContent])
-        content.axis = .vertical
-        content.spacing = 8
-        content.translatesAutoresizingMaskIntoConstraints = false
-        card.addSubview(content)
+        permissionContent.isHidden = true
+        addSubview(permissionContent)
 
         NSLayoutConstraint.activate([
-            topSpacer.heightAnchor.constraint(equalTo: bottomSpacer.heightAnchor),
-            card.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 6),
-            card.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -6),
-            card.topAnchor.constraint(equalTo: topAnchor, constant: 6),
-            card.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -6),
-            content.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 16),
-            content.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -16),
-            content.topAnchor.constraint(equalTo: card.topAnchor, constant: 14),
-            content.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -14)
+            activeContainer.leadingAnchor.constraint(equalTo: leadingAnchor),
+            activeContainer.trailingAnchor.constraint(equalTo: trailingAnchor),
+            activeContainer.topAnchor.constraint(equalTo: topAnchor),
+            activeContainer.bottomAnchor.constraint(equalTo: bottomAnchor),
+
+            cancelButton.topAnchor.constraint(equalTo: activeContainer.topAnchor, constant: 10),
+            cancelButton.trailingAnchor.constraint(equalTo: activeContainer.trailingAnchor, constant: -12),
+            cancelButton.widthAnchor.constraint(equalToConstant: 30),
+            cancelButton.heightAnchor.constraint(equalToConstant: 30),
+
+            draftLabel.topAnchor.constraint(equalTo: activeContainer.topAnchor, constant: 12),
+            draftLabel.leadingAnchor.constraint(equalTo: activeContainer.leadingAnchor, constant: 48),
+            draftLabel.trailingAnchor.constraint(equalTo: activeContainer.trailingAnchor, constant: -48),
+
+            orbView.centerXAnchor.constraint(equalTo: activeContainer.centerXAnchor),
+            orbView.centerYAnchor.constraint(equalTo: activeContainer.centerYAnchor, constant: -10),
+            orbView.widthAnchor.constraint(equalToConstant: 168),
+            orbView.heightAnchor.constraint(equalToConstant: 168),
+
+            statusLabel.topAnchor.constraint(equalTo: orbView.bottomAnchor, constant: 2),
+            statusLabel.leadingAnchor.constraint(equalTo: activeContainer.leadingAnchor, constant: 16),
+            statusLabel.trailingAnchor.constraint(equalTo: activeContainer.trailingAnchor, constant: -16),
+
+            permissionContent.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 20),
+            permissionContent.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -20),
+            permissionContent.centerYAnchor.constraint(equalTo: centerYAnchor),
+            permissionActions.widthAnchor.constraint(equalTo: permissionContent.widthAnchor),
+            permissionMessage.widthAnchor.constraint(equalTo: permissionContent.widthAnchor),
+            settingsContainer.widthAnchor.constraint(equalTo: permissionContent.widthAnchor)
         ])
-        permissionContent.isHidden = true
-        permissionActions.widthAnchor.constraint(equalTo: content.widthAnchor).isActive = true
-        permissionMessage.widthAnchor.constraint(equalTo: content.widthAnchor).isActive = true
-        settingsContainer.widthAnchor.constraint(equalTo: content.widthAnchor).isActive = true
+
         let tap = UITapGestureRecognizer(target: self, action: #selector(handlePanelTap))
         tap.cancelsTouchesInView = false
         tap.delegate = self
@@ -2033,43 +2136,34 @@ private final class KeyboardVoicePanel: UIView, UIGestureRecognizerDelegate {
 
     func renderDirect(title: String, message: String, levels: [Float], mode: DirectMode, actionTitle: String?) {
         directMode = mode
+        let isPermissionOrFailed = (mode == .permissions || mode == .failed)
+        activeContainer.isHidden = isPermissionOrFailed
+        permissionContent.isHidden = !isPermissionOrFailed
+
+        if isPermissionOrFailed {
+            orbView.update(levels: [], mode: .idle, reduceMotion: UIAccessibility.isReduceMotionEnabled)
+            permissionMessage.text = message
+            permissionButton.isHidden = mode != .permissions
+            permissionButton.isEnabled = mode == .permissions
+            settingsContainer.isHidden = mode != .failed
+            return
+        }
+
         statusLabel.text = title
-        statusLabel.textAlignment = .center
-        dotView.isHidden = true
-        headerSpacer.isHidden = true
-        standbyLabel.isHidden = true
-        endStandbyButton.isHidden = true
         let trimmed = message.replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespacesAndNewlines)
         draftLabel.text = trimmed
         draftLabel.isHidden = trimmed.isEmpty
-        draftLabel.textColor = mode == .failed ? .secondaryLabel : .label
-        meter.isListening = (mode == .listening || mode == .starting)
-        meter.barColor = mode == .failed ? .systemGray : .systemBlue
-        meter.show(levels, reduceMotion: UIAccessibility.isReduceMotionEnabled)
-
-        let permissionContent = permissionMessage.superview
-        permissionContent?.isHidden = mode != .permissions && mode != .failed
-        permissionMessage.text = message
-        permissionButton.isHidden = mode != .permissions
-        settingsContainer.isHidden = mode != .failed
-        permissionCancelButton.superview?.isHidden = false
-        if let actions = cancelButton.superview {
-            actions.isHidden = mode != .listening && mode != .starting && mode != .finishing
-        }
-        cancelButton.isHidden = false
+        cancelButton.isHidden = mode == .finishing
         cancelButton.isEnabled = mode == .listening || mode == .starting
-        stopButton.isHidden = mode == .starting
-        var stopConfig = UIButton.Configuration.filled()
-        stopConfig.title = mode == .finishing ? "识别中…" : (actionTitle ?? "完成")
-        stopConfig.image = mode == .finishing ? nil : UIImage(systemName: "checkmark")
-        stopConfig.imagePadding = 6
-        stopConfig.cornerStyle = .capsule
-        stopConfig.baseBackgroundColor = mode == .finishing ? .systemGray3 : .systemBlue
-        stopConfig.baseForegroundColor = .white
-        stopButton.configuration = stopConfig
-        stopButton.accessibilityLabel = "结束语音并\(actionTitle ?? "完成")"
-        stopButton.isEnabled = mode == .listening
-        permissionButton.isEnabled = mode == .permissions
+
+        let orbMode: KeyboardOrbWaveformView.Mode
+        switch mode {
+        case .listening: orbMode = .listening
+        case .starting: orbMode = .starting
+        case .finishing: orbMode = .finishing
+        case .permissions, .failed: orbMode = .idle
+        }
+        orbView.update(levels: levels, mode: orbMode, reduceMotion: UIAccessibility.isReduceMotionEnabled)
     }
 
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
