@@ -69,6 +69,13 @@ enum VoiceTranscriptionProviderFactory {
 }
 
 struct ElevenLabsTranscriptionProvider: VoiceTranscriptionProvider {
+    private static let polishInstruction = """
+        Lightly edit this dictation in its original language or mixture of languages. \
+        Fix punctuation and sentence breaks. Remove filler sounds, abandoned false starts, \
+        and accidental repetition. When the speaker clearly corrects themselves, keep the final wording. \
+        Preserve meaning, tone, names, numbers, and deliberate emphasis. Return only the edited dictation.
+        """
+
     private let session: URLSession
 
     init(session: URLSession = .shared) {
@@ -118,9 +125,18 @@ struct ElevenLabsTranscriptionProvider: VoiceTranscriptionProvider {
         guard let decoded = try? JSONDecoder().decode(ElevenLabsTranscriptionResponse.self, from: data) else {
             throw VoiceTranscriptionError.invalidResponse
         }
-        let text = Self.stripAudioEventTags(decoded.text).trimmingCharacters(in: .whitespacesAndNewlines)
+        if configuration.supportsTranscriptCleanup, configuration.polishTranscript,
+           let edit = decoded.editedTranscript, edit.kind == "transcript", let editedText = edit.text {
+            let text = Self.cleanedTranscript(editedText)
+            if !text.isEmpty { return text }
+        }
+        let text = Self.cleanedTranscript(decoded.text)
         guard !text.isEmpty else { throw VoiceTranscriptionError.invalidResponse }
         return text
+    }
+
+    private static func cleanedTranscript(_ text: String) -> String {
+        stripAudioEventTags(text).trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// Removes residual non-speech audio event tags (e.g. `[写字声]`, `(笑声)`) if any slip through.
@@ -138,6 +154,12 @@ struct ElevenLabsTranscriptionProvider: VoiceTranscriptionProvider {
         var body = Data()
         body.appendFormField(name: "model_id", value: configuration.model, boundary: boundary)
         body.appendFormField(name: "tag_audio_events", value: "false", boundary: boundary)
+        if configuration.supportsTranscriptCleanup {
+            body.appendFormField(name: "no_verbatim", value: "true", boundary: boundary)
+            if configuration.polishTranscript {
+                body.appendFormField(name: "transcript_edit", value: Self.polishInstruction, boundary: boundary)
+            }
+        }
         if !configuration.language.isEmpty {
             body.appendFormField(name: "language_code", value: configuration.language, boundary: boundary)
         }
@@ -164,6 +186,17 @@ private extension Data {
 
 private struct ElevenLabsTranscriptionResponse: Decodable {
     let text: String
+    let editedTranscript: Edit?
+
+    enum CodingKeys: String, CodingKey {
+        case text
+        case editedTranscript = "edited_transcript"
+    }
+
+    struct Edit: Decodable {
+        let kind: String
+        let text: String?
+    }
 }
 
 private struct ElevenLabsErrorResponse: Decodable {

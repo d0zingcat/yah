@@ -14,14 +14,44 @@ struct VoiceConfiguration: Codable, Equatable {
     var endpoint: String
     var model: String
     var language: String
+    var polishTranscript: Bool
 
     static let defaults = VoiceConfiguration(
         provider: .elevenLabs,
         apiKey: "",
         endpoint: "https://api.elevenlabs.io/v1/speech-to-text",
-        model: "scribe_v2",
-        language: "zh"
+        model: "scribe_v3",
+        language: "zh",
+        polishTranscript: false
     )
+
+    var supportsTranscriptCleanup: Bool {
+        ["scribe_v3", "scribe_v2", "scribe_v2_medical"].contains(model)
+    }
+
+    private init(provider: Provider, apiKey: String, endpoint: String, model: String, language: String, polishTranscript: Bool) {
+        self.provider = provider
+        self.apiKey = apiKey
+        self.endpoint = endpoint
+        self.model = model
+        self.language = language
+        self.polishTranscript = polishTranscript
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        provider = try values.decode(Provider.self, forKey: .provider)
+        apiKey = try values.decode(String.self, forKey: .apiKey)
+        endpoint = try values.decode(String.self, forKey: .endpoint)
+        model = try values.decode(String.self, forKey: .model)
+        language = try values.decode(String.self, forKey: .language)
+        let savedPolish = try values.decodeIfPresent(Bool.self, forKey: .polishTranscript)
+        polishTranscript = savedPolish ?? false
+        // Upgrade the previous default while preserving custom endpoints and newly saved model choices.
+        if savedPolish == nil, endpoint == Self.defaults.endpoint, model == "scribe_v2" {
+            model = Self.defaults.model
+        }
+    }
 
     var hasValidEndpoint: Bool {
         guard let url = URL(string: endpoint) else { return false }

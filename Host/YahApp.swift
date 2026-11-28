@@ -386,6 +386,7 @@ private struct VoiceSetupView: View {
                     Picker("服务商", selection: $configuration.provider) {
                         ForEach(VoiceConfiguration.Provider.allCases) { provider in
                             Text(provider.displayName).tag(provider)
+                        }
                     }
                     SecureField("ElevenLabs API Key", text: $configuration.apiKey)
                         .textInputAutocapitalization(.never)
@@ -400,6 +401,11 @@ private struct VoiceSetupView: View {
                     TextField("语言代码（可选，如 zh / en）", text: $configuration.language)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
+                    if configuration.supportsTranscriptCleanup {
+                        Toggle(isOn: $configuration.polishTranscript) {
+                            Text("润色转写")
+                            Text("整理标点、断句和重复表达。ElevenLabs 会加收润色费用。")
+                        }
                     }
                 }
                 .disabled(phase != .idle)
