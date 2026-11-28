@@ -89,9 +89,16 @@ struct ElevenLabsTranscriptionProvider: VoiceTranscriptionProvider {
         guard let decoded = try? JSONDecoder().decode(ElevenLabsTranscriptionResponse.self, from: data) else {
             throw VoiceTranscriptionError.invalidResponse
         }
-        let text = decoded.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let text = Self.stripAudioEventTags(decoded.text).trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { throw VoiceTranscriptionError.invalidResponse }
         return text
+    }
+
+    /// Removes residual non-speech audio event tags (e.g. `[写字声]`, `(笑声)`) if any slip through.
+    private static func stripAudioEventTags(_ text: String) -> String {
+        let pattern = #"[\[\(（【][^\]\)）】]{1,16}(?:声|音|笑|哭|咳|叹气|呼吸|鼓掌|掌声|音乐|噪声|噪音|杂音|静默|沉默|静音)[^\]\)）】]{0,4}[\]\)）】]"#
+        let stripped = text.replacingOccurrences(of: pattern, with: "", options: .regularExpression)
+        return stripped.replacingOccurrences(of: #" {2,}"#, with: " ", options: .regularExpression)
     }
 
     private func multipartBody(
@@ -101,6 +108,7 @@ struct ElevenLabsTranscriptionProvider: VoiceTranscriptionProvider {
     ) -> Data {
         var body = Data()
         body.appendFormField(name: "model_id", value: configuration.model, boundary: boundary)
+        body.appendFormField(name: "tag_audio_events", value: "false", boundary: boundary)
         if !configuration.language.isEmpty {
             body.appendFormField(name: "language_code", value: configuration.language, boundary: boundary)
         }
