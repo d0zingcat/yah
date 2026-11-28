@@ -21,15 +21,29 @@ struct YahApp: App {
 private struct YahRootView: View {
     @Environment(\.scenePhase) private var scenePhase
     @AppStorage("yahKeyboardOnboardingCompleted") private var onboardingCompleted = false
+    @ObservedObject private var voiceLaunch = VoiceLaunch.shared
     @State private var keyboardActivated = false
     @State private var showingSettings = false
+    @State private var incomingVoiceURL: URL?
 
     var body: some View {
         Group {
-            if onboardingCompleted || showingSettings {
-                VoiceSetupView {
-                    onboardingCompleted = false
-                    showingSettings = false
+            if showingSettings {
+                VoiceSetupView(
+                    incomingURL: incomingVoiceURL,
+                    onShowOnboarding: {
+                        onboardingCompleted = false
+                        incomingVoiceURL = nil
+                        showingSettings = false
+                    },
+                    onClose: {
+                        incomingVoiceURL = nil
+                        showingSettings = false
+                    }
+                )
+            } else if onboardingCompleted {
+                InputDashboardView(keyboardActivated: keyboardActivated) {
+                    showingSettings = true
                 }
             } else {
                 YahKeyboardOnboarding(
@@ -45,7 +59,16 @@ private struct YahRootView: View {
         .onOpenURL { url in
             if url.scheme == "local-yah-voice", url.host == "settings" {
                 showingSettings = true
+            } else if url.scheme == "local-yah-voice", ["start", "standby", "resume"].contains(url.host ?? "") {
+                onboardingCompleted = true
+                incomingVoiceURL = url
+                showingSettings = true
             }
+        }
+        .onChange(of: voiceLaunch.request) { request in
+            guard request != nil else { return }
+            onboardingCompleted = true
+            showingSettings = true
         }
         .onChange(of: scenePhase) { phase in
             if phase == .active { refreshKeyboardActivation() }
@@ -307,9 +330,13 @@ private struct VoiceSetupView: View {
     @State private var startTask: Task<Void, Never>?
     @State private var saveSucceeded = false
     private let onShowOnboarding: () -> Void
+    private let onClose: () -> Void
+    private let incomingURL: URL?
 
-    init(onShowOnboarding: @escaping () -> Void = {}) {
+    init(incomingURL: URL? = nil, onShowOnboarding: @escaping () -> Void = {}, onClose: @escaping () -> Void = {}) {
+        self.incomingURL = incomingURL
         self.onShowOnboarding = onShowOnboarding
+        self.onClose = onClose
     }
 
     var body: some View {
@@ -402,6 +429,7 @@ private struct VoiceSetupView: View {
                 loadConfiguration()
                 consumeStandbyLaunch(isActive: scenePhase == .active)
                 consumeVoiceLaunch()
+                if let incomingURL { handleVoiceURL(incomingURL) }
             }
             .task(id: pendingSpeech?.name) {
                 guard let pending = pendingSpeech else { return }
@@ -411,53 +439,8 @@ private struct VoiceSetupView: View {
                 pending.remove()
                 pendingSpeech = nil
             }
-            .onOpenURL { url in
-                guard url.scheme == "local-yah-voice" else { return }
-                if url.host == "resume" {
-                    guard url.pathComponents.count == 3, let id = UUID(uuidString: url.pathComponents[1]),
-                          VoiceHandoff.acceptKeyboardLink(url) else {
-                        show("请点「重试上次转写」。", succeeded: false)
-                        return
-                    }
-                    if phase == .idle { pendingSpeech = PendingSpeech.restore() }
-                    guard pendingSpeech?.recording == id else {
-                        show("这段待转写的录音已结束或过期。", succeeded: false)
-                        return
-                    }
-                    requestedRecovery = id
-                    resumeIfRequested()
-                    return
-                }
-                if url.host == "standby" {
-                    let launchID: UUID
-                    if url.pathComponents.count == 3, let parsed = UUID(uuidString: url.pathComponents[1]) {
-                        launchID = parsed
-                    } else {
-                        launchID = UUID()
-                    }
-                    if VoiceHandoff.acceptKeyboardLink(url) {
-                        _ = VoiceHandoff.takeStandbyLaunch()
-                        voiceLaunch.standbyLaunch = launchID
-                        consumeStandbyLaunch()
-                    } else if url.pathComponents.count == 3,
-                              let parsed = UUID(uuidString: url.pathComponents[1]),
-                              VoiceHandoff.takeStandbyLaunch() == parsed {
-                        if VoiceHandoff.keyboardTicket() == nil { try? VoiceHandoff.issueKeyboardTicket() }
-                        voiceLaunch.standbyLaunch = parsed
-                        consumeStandbyLaunch()
-                    } else if phase == .idle {
-                        if VoiceHandoff.keyboardTicket() == nil { try? VoiceHandoff.issueKeyboardTicket() }
-                        show("首次使用，请点「开启语音待机」。下次点键盘麦克风将自动开启待机。", succeeded: true)
-                    }
-                    return
-                }
-                guard url.host == "start" else { return }
-                if VoiceHandoff.acceptKeyboardLink(url) {
-                    voiceLaunch.request = UUID()
-                    consumeVoiceLaunch()
-                } else if phase == .idle {
-                    show("首次使用，请点「开始跨应用语音输入」。下次可直接点键盘麦克风。", succeeded: true)
-                }
+            .onChange(of: incomingURL) { url in
+                if let url { handleVoiceURL(url) }
             }
             .onChange(of: voiceLaunch.standbyLaunch) { _ in consumeStandbyLaunch() }
             .onChange(of: voiceLaunch.request) { _ in consumeVoiceLaunch() }
@@ -493,6 +476,11 @@ private struct VoiceSetupView: View {
                 }
             }
         }
+        .toolbar {
+            ToolbarItem(placement: .navigationBarLeading) {
+                Button("完成", action: onClose)
+            }
+        }
         .accessibilityHidden(handoffOverlay != nil)
         .overlay {
             if let handoffOverlay {
@@ -506,6 +494,55 @@ private struct VoiceSetupView: View {
                     onEndStandby: { endStandby() }
                 )
             }
+        }
+    }
+
+    private func handleVoiceURL(_ url: URL) {
+        guard url.scheme == "local-yah-voice" else { return }
+        if url.host == "resume" {
+            guard url.pathComponents.count == 3, let id = UUID(uuidString: url.pathComponents[1]),
+                  VoiceHandoff.acceptKeyboardLink(url) else {
+                show("请点「重试上次转写」。", succeeded: false)
+                return
+            }
+            if phase == .idle { pendingSpeech = PendingSpeech.restore() }
+            guard pendingSpeech?.recording == id else {
+                show("这段待转写的录音已结束或过期。", succeeded: false)
+                return
+            }
+            requestedRecovery = id
+            resumeIfRequested()
+            return
+        }
+        if url.host == "standby" {
+            let launchID: UUID
+            if url.pathComponents.count == 3, let parsed = UUID(uuidString: url.pathComponents[1]) {
+                launchID = parsed
+            } else {
+                launchID = UUID()
+            }
+            if VoiceHandoff.acceptKeyboardLink(url) {
+                _ = VoiceHandoff.takeStandbyLaunch()
+                voiceLaunch.standbyLaunch = launchID
+                consumeStandbyLaunch()
+            } else if url.pathComponents.count == 3,
+                      let parsed = UUID(uuidString: url.pathComponents[1]),
+                      VoiceHandoff.takeStandbyLaunch() == parsed {
+                if VoiceHandoff.keyboardTicket() == nil { try? VoiceHandoff.issueKeyboardTicket() }
+                voiceLaunch.standbyLaunch = parsed
+                consumeStandbyLaunch()
+            } else if phase == .idle {
+                if VoiceHandoff.keyboardTicket() == nil { try? VoiceHandoff.issueKeyboardTicket() }
+                show("首次使用，请点「开启语音待机」。下次点键盘麦克风将自动开启待机。", succeeded: true)
+            }
+            return
+        }
+        guard url.host == "start" else { return }
+        if VoiceHandoff.acceptKeyboardLink(url) {
+            voiceLaunch.request = UUID()
+            consumeVoiceLaunch()
+        } else if phase == .idle {
+            show("首次使用，请点「开始跨应用语音输入」。下次可直接点键盘麦克风。", succeeded: true)
         }
     }
 
