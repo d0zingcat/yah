@@ -269,7 +269,7 @@ final class VoiceRecorder: NSObject {
         let reader = RecordingPreview(recording: url)
         levelTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 150_000_000)
+                try? await Task.sleep(nanoseconds: 80_000_000)
                 guard !Task.isCancelled, let self, self.previewID == id else { break }
                 guard let levels = await reader.levels(barCount: 16) else { continue }
                 guard !Task.isCancelled, self.previewID == id else { break }

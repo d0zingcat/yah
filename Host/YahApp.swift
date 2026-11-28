@@ -834,8 +834,19 @@ private struct VoiceSetupView: View {
             guard let stored = try VoiceConfigurationStore.load() else {
                 throw VoiceTranscriptionError.missingAPIKey
             }
-            let result = try await VoiceTranscriptionProviderFactory.make(for: stored)
-                .transcribe(audioURL: audioURL, configuration: stored)
+            let provider = VoiceTranscriptionProviderFactory.make(for: stored)
+            var attempt = 0
+            let result: String
+            while true {
+                do {
+                    result = try await provider.transcribe(audioURL: audioURL, configuration: stored)
+                    break
+                } catch {
+                    attempt += 1
+                    guard attempt <= 2, VoiceTranscriptionError.isTransient(error), !Task.isCancelled else { throw error }
+                    try await Task.sleep(nanoseconds: UInt64(attempt) * 1_500_000_000)
+                }
+            }
             try Task.checkCancellation()
             transcript = result
             if recording != nil || deliverRecognizedSpeech {
@@ -851,7 +862,7 @@ private struct VoiceSetupView: View {
         } catch {
             if let pending = pendingSpeech, pending.file == audioURL, pending.expires > Date() {
                 keepForRetry = true
-                let hint = Task.isCancelled ? "系统已暂停转写。" : "本次服务未完成转写。"
+                let hint = Task.isCancelled ? "系统已暂停转写。" : "本次服务未完成转写（\(VoiceTranscriptionError.reason(for: error))）。"
                 let message = hint + "五分钟内可重试同一段录音。"
                 if let recording { VoiceHandoff.publishFailure(message, for: recording) }
                 show(message, succeeded: false)

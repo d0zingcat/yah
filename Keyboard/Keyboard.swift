@@ -70,6 +70,8 @@ final class KeyboardController: UIInputViewController {
     private var lastDeliveryLookup: (document: UUID, latest: UUID?)?
     private var resultWaitBegan: Date?
     private let voiceStatus = UILabel()
+    private let voiceRetry = UIButton(type: .system)
+    private let voiceStatusRow = UIStackView()
     private weak var mainToolbar: UIView?
     private let insertVoice = UIButton(type: .system)
     private var voiceLaunchCheck: Task<Void, Never>?
@@ -435,7 +437,24 @@ final class KeyboardController: UIInputViewController {
         voiceStatus.numberOfLines = 2
         voiceStatus.isHidden = true
         voiceStatus.accessibilityIdentifier = "voice-request-status"
-        stack.addArrangedSubview(voiceStatus)
+        var retryConfig = UIButton.Configuration.tinted()
+        retryConfig.title = "重试"
+        retryConfig.cornerStyle = .capsule
+        retryConfig.contentInsets = NSDirectionalEdgeInsets(top: 4, leading: 14, bottom: 4, trailing: 14)
+        voiceRetry.configuration = retryConfig
+        voiceRetry.accessibilityLabel = "重试同一段录音"
+        voiceRetry.accessibilityIdentifier = "voice-retry"
+        voiceRetry.isHidden = true
+        voiceRetry.setContentHuggingPriority(.required, for: .horizontal)
+        voiceRetry.setContentCompressionResistancePriority(.required, for: .horizontal)
+        voiceRetry.addAction(UIAction { [weak self] _ in self?.openVoice() }, for: .touchUpInside)
+        voiceStatusRow.axis = .horizontal
+        voiceStatusRow.spacing = 8
+        voiceStatusRow.alignment = .center
+        voiceStatusRow.isHidden = true
+        voiceStatusRow.addArrangedSubview(voiceStatus)
+        voiceStatusRow.addArrangedSubview(voiceRetry)
+        stack.addArrangedSubview(voiceStatusRow)
 
         voicePanel.isHidden = true
         voicePanel.onCancel = { [weak self] in self?.cancelActiveVoice() }
@@ -654,6 +673,9 @@ final class KeyboardController: UIInputViewController {
 
         voiceStatus.text = status
         voiceStatus.isHidden = status == nil || showVoicePanel
+        voiceStatusRow.isHidden = voiceStatus.isHidden
+        voiceRetry.isHidden = voiceStatusRow.isHidden || retryingVoice != nil || startingVoice != nil
+            || visibleSession != nil || VoiceHandoff.recovery() == nil
 
         if revealedPreview?.recording != visibleSession?.id || revealedPreview?.document != document { revealedPreview = nil }
 
@@ -1861,6 +1883,7 @@ private final class KeyboardOrbWaveformView: UIView {
     private var targetLevels: [Float] = []
     private var displayLevels: [CGFloat] = Array(repeating: 0.12, count: 7)
     private var haloScale: CGFloat = 1.0
+    private var energy: CGFloat = 0
     private var displayLink: CADisplayLink?
     private var phase: CGFloat = 0
     private var reduceMotion = false
@@ -1898,6 +1921,7 @@ private final class KeyboardOrbWaveformView: UIView {
         if reduceMotion || mode == .idle {
             displayLevels = [0.18, 0.36, 0.62, 0.82, 0.62, 0.36, 0.18]
             haloScale = 1.0
+            energy = 0
             setNeedsDisplay()
         } else {
             updateDisplayLink()
@@ -1924,15 +1948,23 @@ private final class KeyboardOrbWaveformView: UIView {
         let count = displayLevels.count
         let mid = CGFloat(count - 1) / 2
         let recent = Array(targetLevels.suffix(7))
-        let peak = CGFloat(recent.max() ?? 0)
+        let peak = min(1, CGFloat(recent.max() ?? 0) * 1.6)
+        let average = min(1, CGFloat(recent.reduce(0, +)) / CGFloat(max(1, recent.count)) * 2.2)
+        let targetEnergy: CGFloat
+        switch mode {
+        case .listening: targetEnergy = max(peak * 0.6 + average * 0.4, 0.04 * (0.5 + 0.5 * sin(phase * 0.9)))
+        case .starting, .finishing: targetEnergy = 0.22 + 0.16 * sin(phase * 0.8)
+        case .idle: targetEnergy = 0
+        }
+        energy += (targetEnergy - energy) * (targetEnergy > energy ? 0.45 : 0.12)
 
         let targetHalo: CGFloat
         switch mode {
         case .listening:
             let idlePulse = 0.04 * (0.5 + 0.5 * sin(phase * 0.9))
-            targetHalo = 1.04 + idlePulse + min(0.24, peak * 0.28)
+            targetHalo = 1.06 + idlePulse + min(0.45, peak * 0.5)
         case .starting, .finishing:
-            targetHalo = 1.05 + 0.05 * (0.5 + 0.5 * sin(phase * 1.2))
+            targetHalo = 1.10 + 0.10 * (0.5 + 0.5 * sin(phase * 1.2))
         case .idle:
             targetHalo = 1.0
         }
@@ -1953,7 +1985,7 @@ private final class KeyboardOrbWaveformView: UIView {
                 }
                 let breath = (0.18 + 0.10 * sin(phase + CGFloat(i) * 0.7)) * envelope
                 let voice = sample * envelope * (0.85 + 0.25 * sin(phase * 2.2 + CGFloat(i) * 0.9))
-                desired = min(1.0, max(breath, voice))
+                desired = min(1.0, max(breath, voice * 1.35))
             case .starting, .finishing:
                 let wave = 0.5 + 0.5 * sin(phase * 1.8 - CGFloat(i) * 0.65)
                 desired = (0.20 + 0.45 * wave) * envelope
@@ -1971,16 +2003,21 @@ private final class KeyboardOrbWaveformView: UIView {
         let orbDiameter = min(bounds.width, bounds.height) * 0.66
         let orbRadius = orbDiameter / 2
 
-        // Outer soft concentric halo that responds to audio intensity
-        let haloRadius = orbRadius * haloScale
-        let haloColor = UIColor.label.resolvedColor(with: traitCollection).withAlphaComponent(0.09)
-        haloColor.setFill()
-        UIBezierPath(arcCenter: center, radius: haloRadius, startAngle: 0, endAngle: .pi * 2, clockwise: true).fill()
+        // Layered ripples expand with voice energy
+        let label = UIColor.label.resolvedColor(with: traitCollection)
+        for (index, alpha) in [(2, CGFloat(0.07)), (1, CGFloat(0.12)), (0, CGFloat(0.2))] {
+            let ripple = min(min(bounds.width, bounds.height) / 2, orbRadius * (1 + (haloScale - 1) * (1 + CGFloat(index) * 0.5)))
+            let fade = alpha * (0.6 + 0.4 * min(1, energy * 2))
+            label.withAlphaComponent(fade).setFill()
+            UIBezierPath(arcCenter: center, radius: ripple, startAngle: 0, endAngle: .pi * 2, clockwise: true).fill()
+        }
 
-        // Core high-contrast circular orb (black in light mode, white in dark mode)
+        // Core orb scales with smoothed voice energy
+        let coreRadius = orbRadius * (1 + 0.14 * energy)
+        let coreDiameter = coreRadius * 2
         let orbColor = UIColor { $0.userInterfaceStyle == .dark ? UIColor(white: 0.95, alpha: 1) : UIColor(white: 0.08, alpha: 1) }
         orbColor.resolvedColor(with: traitCollection).setFill()
-        UIBezierPath(arcCenter: center, radius: orbRadius, startAngle: 0, endAngle: .pi * 2, clockwise: true).fill()
+        UIBezierPath(arcCenter: center, radius: coreRadius, startAngle: 0, endAngle: .pi * 2, clockwise: true).fill()
 
         // 7 crisp vertical capsule bars inside the orb
         let barColor = UIColor { $0.userInterfaceStyle == .dark ? UIColor(white: 0.08, alpha: 1) : .white }
@@ -1991,7 +2028,7 @@ private final class KeyboardOrbWaveformView: UIView {
         let spacing: CGFloat = 5.6
         let totalWidth = CGFloat(count) * barWidth + CGFloat(count - 1) * spacing
         let startX = center.x - totalWidth / 2
-        let maxBarHeight = orbDiameter * 0.44
+        let maxBarHeight = coreDiameter * 0.44
         let minBarHeight = barWidth
 
         for i in 0..<count {

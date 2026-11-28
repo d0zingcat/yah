@@ -30,6 +30,35 @@ enum VoiceTranscriptionError: LocalizedError {
     }
 }
 
+extension VoiceTranscriptionError {
+    static func isTransient(_ error: Error) -> Bool {
+        if let urlError = error as? URLError {
+            switch urlError.code {
+            case .timedOut, .networkConnectionLost, .notConnectedToInternet, .cannotConnectToHost,
+                 .cannotFindHost, .dnsLookupFailed, .secureConnectionFailed:
+                return true
+            default: return false
+            }
+        }
+        if case .server(let status, _) = error as? VoiceTranscriptionError {
+            return status == 408 || status == 429 || status >= 500
+        }
+        return false
+    }
+
+    static func reason(for error: Error) -> String {
+        if let urlError = error as? URLError {
+            return urlError.code == .timedOut ? "网络超时" : "网络连接失败"
+        }
+        switch error as? VoiceTranscriptionError {
+        case .server(let status, _): return status == 429 ? "服务繁忙" : "服务异常 \(status)"
+        case .invalidResponse: return "未识别到语音内容"
+        case .unreadableAudio: return "录音读取失败"
+        default: return "未知原因"
+        }
+    }
+}
+
 enum VoiceTranscriptionProviderFactory {
     static func make(for configuration: VoiceConfiguration) -> VoiceTranscriptionProvider {
         switch configuration.provider {
