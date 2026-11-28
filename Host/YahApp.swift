@@ -13,6 +13,7 @@ struct YahApp: App {
     var body: some Scene {
         WindowGroup {
             YahRootView()
+                .tint(YahTheme.accent)
         }
     }
 }
@@ -178,7 +179,7 @@ private struct YahKeyboardOnboarding: View {
             VStack(spacing: 8) {
                 Text("长按 🌐 切换到 Yah 输入法")
                     .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(YahTheme.accent)
                 TextField("点此调出键盘", text: .constant(""))
                     .textFieldStyle(.roundedBorder)
                     .focused($inputFocused)
@@ -198,7 +199,7 @@ private struct YahKeyboardOnboarding: View {
                 .buttonStyle(.borderedProminent)
             } else {
                 ProgressView("等待切换到 Yah 输入法…")
-                    .tint(.orange)
+                    .tint(YahTheme.accent)
             }
             Button("返回第一步") { step = 1 }
                 .buttonStyle(.bordered)
@@ -350,7 +351,7 @@ private struct VoiceSetupView: View {
                     }
                     if let active = standby.session {
                         HStack {
-                            Label("连续听写已开启", systemImage: "mic.fill").foregroundStyle(.orange)
+                            Label("连续听写已开启", systemImage: "mic.fill").foregroundStyle(YahTheme.accent)
                             Spacer()
                             Text(timerInterval: min(Date(), active.expires)...active.expires, countsDown: true)
                                 .monospacedDigit().fixedSize()
@@ -1058,7 +1059,7 @@ private struct StandbyHandoffOverlay: View {
                 HStack(spacing: 8) {
                     Image(systemName: "arrow.up.left")
                         .font(.title3.weight(.bold))
-                        .foregroundStyle(.orange)
+                        .foregroundStyle(YahTheme.accent)
                         .offset(x: nudge ? -3 : 2, y: nudge ? -3 : 2)
                     Text("点左上角返回原输入框")
                         .font(.subheadline.weight(.semibold))
@@ -1083,11 +1084,11 @@ private struct StandbyHandoffOverlay: View {
                     VStack(spacing: 16) {
                         ZStack {
                             Circle()
-                                .fill(Color.orange.opacity(0.16))
+                                .fill(YahTheme.accentBackground)
                                 .frame(width: 96, height: 96)
                             Image(systemName: "mic.fill")
                                 .font(.system(size: 38, weight: .semibold))
-                                .foregroundStyle(.orange)
+                                .foregroundStyle(YahTheme.accent)
                         }
                         Text(standbyMinutes == 0 ? "单次语音已准备" : "\(standbyMinutes) 分钟语音待机已开启")
                             .font(.title2.weight(.bold))
@@ -1099,7 +1100,7 @@ private struct StandbyHandoffOverlay: View {
                             .padding(.horizontal, 24)
                         HStack(spacing: 6) {
                             Image(systemName: "timer")
-                                .foregroundStyle(.orange)
+                                .foregroundStyle(YahTheme.accent)
                             Text("待机剩余")
                             Text(timerInterval: min(Date(), expires)...expires, countsDown: true)
                                 .monospacedDigit()

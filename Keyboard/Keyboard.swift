@@ -256,7 +256,7 @@ final class KeyboardController: UIInputViewController {
         settingsButton.accessibilityLabel = open ? "收起设置" : "键盘设置"
         let symbol = UIImage.SymbolConfiguration(pointSize: 16, weight: .medium)
         settingsButton.setImage(UIImage(systemName: open ? "chevron.down" : "square.grid.2x2", withConfiguration: symbol), for: .normal)
-        settingsButton.tintColor = open ? .systemBlue : .label
+        settingsButton.tintColor = open ? YahTheme.accentUIColor : .label
     }
 
     private func updateCandidateToggle() {
@@ -1717,7 +1717,7 @@ private final class KeyboardLevelMeter: UIView {
     private var reduceMotion = false
     private var displayLink: CADisplayLink?
     private var phase: CGFloat = 0
-    var barColor: UIColor = .systemBlue
+    var barColor: UIColor = YahTheme.accentUIColor
     var minimumBarHeight: CGFloat = 4
     var showIdleBars = false
     var isListening = false {
@@ -2252,7 +2252,10 @@ private final class KeyboardSettingsPanel: UIView {
     private let contentStack = UIStackView()
 
     private static let tileColor = UIColor { $0.userInterfaceStyle == .dark ? UIColor(white: 0.24, alpha: 1) : .white }
-    private static let activeTileColor = UIColor { $0.userInterfaceStyle == .dark ? UIColor.systemBlue.withAlphaComponent(0.28) : UIColor.systemBlue.withAlphaComponent(0.12) }
+    private static let activeTileColor = UIColor { traits in
+        YahTheme.accentUIColor.resolvedColor(with: traits)
+            .withAlphaComponent(traits.userInterfaceStyle == .dark ? 0.28 : 0.12)
+    }
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -2498,7 +2501,7 @@ private final class KeyboardSettingsPanel: UIView {
         let btn = UIButton(type: .custom)
         var config = UIButton.Configuration.filled()
         config.baseBackgroundColor = active ? Self.activeTileColor : Self.tileColor
-        config.baseForegroundColor = active ? .systemBlue : .label
+        config.baseForegroundColor = active ? YahTheme.accentUIColor : .label
         config.background.cornerRadius = 12
         config.image = UIImage(systemName: icon, withConfiguration: UIImage.SymbolConfiguration(pointSize: 18, weight: .medium))
         config.imagePlacement = .top
@@ -2514,7 +2517,7 @@ private final class KeyboardSettingsPanel: UIView {
         config.subtitleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attr in
             var out = attr
             out.font = .systemFont(ofSize: 11, weight: .regular)
-            out.foregroundColor = active ? UIColor.systemBlue : UIColor.secondaryLabel
+            out.foregroundColor = active ? YahTheme.accentUIColor : UIColor.secondaryLabel
             return out
         }
         btn.configuration = config
@@ -2576,7 +2579,7 @@ private final class KeyboardSettingsPanel: UIView {
         config.image = icon.flatMap { UIImage(systemName: $0, withConfiguration: UIImage.SymbolConfiguration(pointSize: 13, weight: .medium)) }
         config.imagePadding = 5
         config.baseBackgroundColor = active ? Self.activeTileColor : Self.tileColor
-        config.baseForegroundColor = active ? .systemBlue : .label
+        config.baseForegroundColor = active ? YahTheme.accentUIColor : .label
         config.background.cornerRadius = 10
         config.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attr in
             var out = attr

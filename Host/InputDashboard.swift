@@ -13,21 +13,9 @@ private enum InputDashboardPalette {
             ? UIColor(red: 38 / 255, green: 36 / 255, blue: 43 / 255, alpha: 1)
             : .white
     })
-    static let accent = Color(uiColor: UIColor { traits in
-        traits.userInterfaceStyle == .dark
-            ? UIColor(red: 189 / 255, green: 163 / 255, blue: 235 / 255, alpha: 1)
-            : UIColor(red: 116 / 255, green: 87 / 255, blue: 168 / 255, alpha: 1)
-    })
-    static let mutedAccent = Color(uiColor: UIColor { traits in
-        traits.userInterfaceStyle == .dark
-            ? UIColor(red: 102 / 255, green: 91 / 255, blue: 121 / 255, alpha: 1)
-            : UIColor(red: 210 / 255, green: 202 / 255, blue: 226 / 255, alpha: 1)
-    })
-    static let accentBackground = Color(uiColor: UIColor { traits in
-        traits.userInterfaceStyle == .dark
-            ? UIColor(red: 59 / 255, green: 48 / 255, blue: 75 / 255, alpha: 1)
-            : UIColor(red: 237 / 255, green: 231 / 255, blue: 248 / 255, alpha: 1)
-    })
+    static let accent = YahTheme.accent
+    static let mutedAccent = YahTheme.mutedAccent
+    static let accentBackground = YahTheme.accentBackground
     static let track = Color(uiColor: UIColor { traits in
         traits.userInterfaceStyle == .dark
             ? UIColor(red: 57 / 255, green: 55 / 255, blue: 62 / 255, alpha: 1)
